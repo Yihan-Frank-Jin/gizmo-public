@@ -30,6 +30,9 @@ struct INPUT_STRUCT_NAME
 #if defined(BH_GRAVCAPTURE_GAS) || (BH_GRAVACCRETION == 8)
     MyDouble Mass;
 #endif
+#ifdef BH_YUAN18_ACCRETION
+    MyDouble BH_Mass;
+#endif
 #if defined(BH_GRAVCAPTURE_FIXEDSINKRADIUS)
     MyFloat SinkRadius;
 #endif  
@@ -52,6 +55,9 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
     in->Hsml = PPP[i].Hsml; in->ID = P[i].ID;
 #if defined(BH_GRAVCAPTURE_GAS) || (BH_GRAVACCRETION == 8)
     in->Mass = P[i].Mass;
+#endif
+#ifdef BH_YUAN18_ACCRETION
+    in->BH_Mass = BPP(i).BH_Mass;
 #endif
 #ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS
     in->SinkRadius = PPP[i].SinkRadius;
@@ -100,6 +106,12 @@ MyFloat Jgas_in_Kernel[3], Jstar_in_Kernel[3], Jalt_in_Kernel[3]; // mass/angula
 #if defined(BH_ACCRETE_NEARESTFIRST) && defined(BH_GRAVCAPTURE_GAS)
     MyDouble BH_dr_to_NearestGasNeighbor;
 #endif
+
+#ifdef BH_YUAN18_ACCRETION
+    MyFloat BondiRadius_WeightedSum;
+    MyFloat Bondi_WeightSum;
+    MyFloat Inward_Mass_Flux;
+#endif
 }
 *DATARESULT_NAME, *DATAOUT_NAME; /* dont mess with these names, they get filled-in by your definitions automatically */
 
@@ -145,6 +157,11 @@ static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, in
 #endif    
 #if defined(BH_ACCRETE_NEARESTFIRST) && defined(BH_GRAVCAPTURE_GAS)
     if(mode==0) {P[i].BH_dr_to_NearestGasNeighbor=out->BH_dr_to_NearestGasNeighbor;} else {if(P[i].BH_dr_to_NearestGasNeighbor > out->BH_dr_to_NearestGasNeighbor) {P[i].BH_dr_to_NearestGasNeighbor=out->BH_dr_to_NearestGasNeighbor;}}
+#endif
+
+#ifdef BH_YUAN18_ACCRETION
+    ASSIGN_ADD(BlackholeTempInfo[target].BondiRadius_WeightedSum, out->BondiRadius_WeightedSum, mode);
+    ASSIGN_ADD(BlackholeTempInfo[target].Bondi_WeightSum, out->Bondi_WeightSum, mode);
 #endif
 }
 
@@ -258,6 +275,38 @@ int blackhole_environment_evaluate(int target, int mode, int *exportflag, int *e
                     {
                         /* we found gas in BH's kernel */
                         out.Mgas_in_Kernel += wt;
+
+                        #ifdef BH_YUAN18_ACCRETION
+                        /* 1. Calculate the Bondi radius based on thermal internal energy (Understanding B) */
+                        /* r_B = G * M_BH / u_thermal */
+                        double u_thermal = SphP[j].InternalEnergy; // Internal energy in physical code units
+                        double r_bondi_j = 0.0;
+                        if(u_thermal > 0) {
+                            r_bondi_j = All.G * local.BH_Mass / u_thermal; 
+                        }
+
+                        /* 2. Calculate the true radial velocity (v_rad) */
+                        double r_dist = sqrt(dP[0]*dP[0] + dP[1]*dP[1] + dP[2]*dP[2]);
+                        if(r_dist > 0) {
+                            /* v_rad = (dv dot dP) / r_dist 
+                               Note：dv is the relative velocity of the gas particle to BH，dP is the location vector from gas to BH。
+                               divided by All.cf_atime to convert to physical coordinates */
+                            double v_rad = (dv[0]*dP[0] + dv[1]*dP[1] + dv[2]*dP[2]) / (r_dist * All.cf_atime); 
+                            
+                            /* 3. Calculate Mass Flux weight for INFLOWING gas */
+                            /* v_rad < 0 (inflow) */
+                            if(v_rad < 0) {
+                                double r_phys = r_dist * All.cf_atime;
+                                /* weight_j = m_j * |v_rad| / r_physical */
+                                /* wt = P[j].Mass */
+                                double weight_j = wt * fabs(v_rad) / r_phys;
+                                
+                                out.BondiRadius_WeightedSum += weight_j * r_bondi_j;
+                                out.Bondi_WeightSum += weight_j;
+
+                            }
+                        }
+                        #endif
                         out.BH_InternalEnergy += wt*SphP[j].InternalEnergy;
                         out.Jgas_in_Kernel[0] += wt*(dP[1]*dv[2] - dP[2]*dv[1]); out.Jgas_in_Kernel[1] += wt*(dP[2]*dv[0] - dP[0]*dv[2]); out.Jgas_in_Kernel[2] += wt*(dP[0]*dv[1] - dP[1]*dv[0]);
 #if defined(BH_OUTPUT_MOREINFO)

@@ -80,6 +80,13 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
 #endif
 #if defined(BH_RETURN_BFLUX)
     MyFloat kernel_norm_topass_in_swallowloop;
+#endif
+#ifdef BH_YUAN18_ACCRETION
+    MyFloat BondiRadius_WeightedSum;
+    MyFloat Bondi_WeightSum;
+    MyFloat Inward_Mass_Flux;;
+    MyFloat Yuan18_v_wind;
+    MyFloat Yuan18_eps_wind;
 #endif    
 }
 *BlackholeTempInfo;

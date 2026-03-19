@@ -52,7 +52,13 @@ struct INPUT_STRUCT_NAME
 #endif
 #ifdef SINGLE_STAR_FB_LOCAL_RP
     MyFloat Luminosity;
-#endif    
+#endif
+
+#ifdef BH_YUAN18_ACCRETION
+    MyFloat Yuan18_v_wind;
+    MyFloat Yuan18_f_accreted;
+    MyFloat Yuan18_eps_wind;
+#endif
 }
 *DATAIN_NAME, *DATAGET_NAME; /* dont mess with these names, they get filled-in by your definitions automatically */
 
@@ -89,6 +95,11 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
 #endif
 #ifdef SINGLE_STAR_FB_LOCAL_RP
     in->Luminosity = bh_lum_bol(in->Mdot, in->BH_Mass, i);
+#endif
+
+#ifdef BH_YUAN18_ACCRETION
+    in->Yuan18_v_wind = BlackholeTempInfo[j_tempinfo].Yuan18_v_wind;
+    in->Yuan18_f_accreted = BlackholeTempInfo[j_tempinfo].Yuan18_f_accreted;
 #endif    
 }
 
@@ -272,7 +283,11 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 #ifdef BH_WIND_KICK
                     if(P[j].Type == 0)
                     {
-                        f_accreted = All.BAL_f_accretion; /* if particle is gas, only a fraction gets accreted in these particular modules */
+                        #ifdef BH_YUAN18_ACCRETION
+                            f_accreted = local.Yuan18_f_accreted; /* Use a pseudo 'f_accreted' to realize yuan18 model */
+                        #else
+                            f_accreted = All.BAL_f_accretion; /* Pure GIZMO: if particle is gas, only a fraction gets accreted in these particular modules */
+#endif
 #ifndef BH_GRAVCAPTURE_GAS
                         if((All.BlackHoleFeedbackFactor > 0) && (All.BlackHoleFeedbackFactor != 1.)) {f_accreted /= All.BlackHoleFeedbackFactor;} else {if(All.BAL_v_outflow > 0) f_accreted = 1./(1. + fabs(1.*BH_WIND_KICK)*All.BlackHoleRadiativeEfficiency*C_LIGHT_CODE/(All.BAL_v_outflow));}
                         if((bh_mass_withdisk - local.Mass) <= 0) {f_accreted=0;} // DAA: no need to accrete gas particle to enforce mass conservation (we will simply kick),  note that here the particle mass P.Mass is larger than the physical BH mass P.BH_Mass
@@ -356,12 +371,15 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
                             TimeBin_BH_Medd[bin] -= BPP(j).BH_Mdot / BPP(j).BH_Mass;
                         }
                         Mass_j = 0;
+                        #ifdef BH_ALPHADISK_ACCRETION
                         #pragma omp atomic write
                         BPP(j).BH_Mass_AlphaDisk = 0; // make sure the mass is -actually- zero'd here
+                        #endif
                         #pragma omp atomic write
                         BPP(j).BH_Mdot = 0; // make sure the mass is -actually- zero'd here
                         #pragma omp atomic write
                         BPP(j).BH_Mass = 0; // make sure the mass is -actually- zero'd here
+                        
 #ifdef GALSF
                         out.Accreted_Age = P[j].StellarAge;
 #endif
@@ -410,7 +428,12 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
                         double Mass_initial = Mass_j; // save this for possible IO below
                         Mass_j *= (1-f_accreted);
 #ifdef BH_WIND_KICK     /* BAL kicking operations. NOTE: we have two separate BAL wind models, particle kicking and smooth wind model. This is where we do the particle kicking BAL model. This should also work when there is alpha-disk. */
-                        double v_kick=All.BAL_v_outflow, dir[3]; for(k=0;k<3;k++) {dir[k]=dpos[k];} // DAA: default direction is radially outwards
+                        #ifdef BH_YUAN18_ACCRETION
+                            double v_kick = local.Yuan18_v_wind; /* Use wind speed from yuan18 */
+                        #else
+                            double v_kick = All.BAL_v_outflow;
+                        #endif
+                        double dir[3]; for(k=0;k<3;k++) {dir[k]=dpos[k];} // DAA: default direction is radially outwards
 #if defined(COSMIC_RAY_FLUID) && defined(BH_COSMIC_RAYS) /* inject cosmic rays alongside wind injection */
                         double dEcr = All.BH_CosmicRay_Injection_Efficiency * Mass_j * (All.BAL_f_accretion/(1.-All.BAL_f_accretion)) * C_LIGHT_CODE*C_LIGHT_CODE;
                         inject_cosmic_rays(dEcr,All.BAL_v_outflow,5,j,dir);

@@ -28,6 +28,7 @@
  *   code standards and be properly multi-threaded.
  */
 
+
 #ifdef BLACK_HOLES // top-level flag [needs to be here to prevent compiler breaking when this is not active] //
 
 
@@ -206,7 +207,68 @@ double bh_angleweight(double bh_lum_input, MyFloat bh_angle[3], double dx, doubl
 }
 
 
+// TODO: The declaration for yuan18 related functions and global variables has not been done in blackhole.h yet.
+#if defined(BH_YUAN18_ACCRETION)
+    static double mdotwind_cold(double mdot_bh)
+    {
+        double l_bh_cold = 0.1 * mdot_bh * C_LIGHT_CODE * C_LIGHT_CODE;
+        double mdot_wind = 0.28 * pow(l_bh_cold / 1e45 * (UNIT_ENERGY_IN_CGS / UNIT_TIME_IN_CGS), 0.85) / (UNIT_MASS_IN_SOLAR / UNIT_TIME_IN_YR);
+        return mdot_wind;
+    }
 
+    static int Newtonian_Solver(double mdot_bh_init, double eps, double mdot_in, double *root)
+    {
+        double mdot_bh_old, mdot_bh_new;
+        int i_iter;
+        mdot_bh_old = mdot_bh_init;
+        
+        for (i_iter = 0; i_iter < 100000; i_iter++)
+        {
+            double f0 = mdotwind_cold(mdot_bh_old) - (mdot_in - mdot_bh_old);
+            double f_plus = mdotwind_cold(mdot_bh_old + eps * mdot_bh_old) - (mdot_in - (mdot_bh_old + eps * mdot_bh_old));
+            double f_minus = mdotwind_cold(mdot_bh_old - eps * mdot_bh_old) - (mdot_in - (mdot_bh_old - eps * mdot_bh_old));
+            double derivative = (f_plus - f_minus) / (2.0 * eps * mdot_bh_old);
+            
+            mdot_bh_new = mdot_bh_old - f0 / derivative;
+            
+            if (fabs(mdot_bh_new - mdot_bh_old) / mdot_bh_old < eps)
+            {
+                *root = mdot_bh_new;
+                return 1;
+            }
+            mdot_bh_old = mdot_bh_new;
+        }
+        return 0;
+    }
+
+    static double get_mdot_bh_cold(double mdot_in)
+    {
+        double mdot_bh;
+        if (Newtonian_Solver(0.5 * mdot_in, 1e-7, mdot_in, &mdot_bh) && mdot_bh > MIN_REAL_NUMBER && mdot_bh < mdot_in)
+        {
+            return mdot_bh;
+        }
+        else
+        {
+            printf("mdot_bh = %e, mdot_in = %e\n", mdot_bh, mdot_in);
+            printf("### FATAL ERROR in function [yuan18: get_mdot_bh_cold]\n");
+            printf("Mdot_BH could not be calculated\n");
+            exit(1);  
+        }
+    }
+
+    static double expFactor(Real dt, Real tau) // A function to calculate (1 - exp(-dt / tau)) / dt
+        {
+        if (dt < 0.01 * tau)
+        {
+            return (1 - 0.5 * dt / tau) / tau;
+        }
+        else
+        {
+            return (1 - exp(-dt / tau)) / dt;
+        }
+        }
+#endif
 
 
 
@@ -224,7 +286,7 @@ void set_blackhole_mdot(int i, int n, double dt)
     gsl_rng *random_generator_forbh;
 #endif
 #ifdef BH_ENFORCE_EDDINGTON_LIMIT
-    double meddington = bh_eddington_mdot(BPP(n).BH_Mass);
+    double mdot_edd = bh_eddington_mdot(BPP(n).BH_Mass);
 #endif
 
 
@@ -356,6 +418,10 @@ void set_blackhole_mdot(int i, int n, double dt)
 #endif
         mdot = 4. * M_PI * AccretionFactor * All.G * All.G * BPP(n).BH_Mass * BPP(n).BH_Mass * rho / fac;
     }
+
+#ifdef BH_YUAN18_ACCRETION
+    BPP(n).Yuan18_BH_Mdot_Bondi = mdot;
+#endif
 #endif // ifdef BH_BONDI
 
 
@@ -467,7 +533,7 @@ void set_blackhole_mdot(int i, int n, double dt)
 
 
 #ifdef BH_ENFORCE_EDDINGTON_LIMIT /* cap the maximum at the Eddington limit */
-    if(mdot > All.BlackHoleEddingtonFactor * meddington) {mdot = All.BlackHoleEddingtonFactor * meddington;}
+    if(mdot > All.BlackHoleEddingtonFactor * mdot_edd) {mdot = All.BlackHoleEddingtonFactor * mdot_edd;}
 #endif
 
 #if defined(BH_RETURN_ANGMOM_TO_GAS) /* pre-calculate some quantities for 'angular momentum feedback' here, these have to be based on the mdot estimator above */
@@ -480,9 +546,115 @@ void set_blackhole_mdot(int i, int n, double dt)
     if(jmag>0 && lmag>0) {BlackholeTempInfo[i].angmom_norm_topass_in_swallowloop = angmom_toreturn / sqrt(jmag);} /* this should be in units such that, times CODE radius and (code=physical) ang-mom, gives CODE velocity: looks ok at present */
 #endif
 
+
+
+
+#ifdef BH_YUAN18_ACCRETION
+    double x1min = 0.0;
+    double mdisk = BPP(n).Yuan18_Mass_disk
+
+    /* 获取上一阶段严格加权计算出的 x1min */
+    if (BlackholeTempInfo[i].Bondi_WeightSum > 0) {
+        x1min = BlackholeTempInfo[i].BondiRadius_WeightedSum / BlackholeTempInfo[i].Bondi_WeightSum;
+    } else {
+        x1min = All.ForceSoftening[5]; 
+    }
+    
+    double mdot_edd_yuan18 = bh_eddington_mdot(BPP(n).BH_Mass);
+    double mdot_crit = mdotwind_cold(0.02 * mdot_edd_yuan18) + 0.02 * mdot_edd_yuan18;
+
+    double mdot_bondi = BPP(n).Yuan18_BH_Mdot_Bondi; // TODO: should be modified to a mass flux form!
+    double mdot_bh = 0, mdot_wind = 0, v_wind = 0, eps_wind = 0;
+    double mdot_jet = 0, v_jet = 0, eps_jet = 0;
+    int mode_wind = -1;
+
+    if (mdot_bondi > mdot_crit) // cold mode
+    {
+        if (mdot_bondi > 1.66 * mdot_edd_yuan18) // super Eddington
+        {
+            mdot_bh = 0.5874 * pow(mdot_bondi / mdot_edd_yuan18, 1.0593) * mdot_edd_yuan18;
+            mdot_wind = mdot_bondi - mdot_bh;
+            v_wind = 0.333153 * pow(mdot_bh / mdot_edd_yuan18, -0.0848) * C_LIGHT_CODE;
+            mode_wind = 0; // SUP
+        }
+        else 
+        {
+            double mdot_inn = mdot_bondi;
+            mdot_bh = get_mdot_bh_cold(mdot_inn);
+            mdot_wind = mdot_inn - mdot_bh;
+            mdisk = DMAX(0.0, mdisk - dt * mdot_inn); 
+            
+            double l_bh_cold = 0.1 * mdot_bh * C_LIGHT_CODE * C_LIGHT_CODE;
+            v_wind = 2.5e4 * pow(l_bh_cold / 1e45 * UNIT_ENERGY_IN_CGS / UNIT_TIME_IN_CGS, 0.4) / UNIT_VEL_IN_KMS;
+            v_wind = DMIN(v_wind, 0.3 * C_LIGHT_CODE); 
+            mode_wind = 1; //SUB
+        } 
+       
+        double gamma = 5.0 / 3.0;
+        eps_wind = (130 / UNIT_VEL_IN_KMS) * (130 / UNIT_VEL_IN_KMS) / ((gamma - 1.0) * gamma); 
+    }
+    else if (mdot_bondi > MIN_REAL_NUMBER) // hot mode
+    {
+        double r_s = 2 * All.G * BPP(n).BH_Mass / (C_LIGHT_CODE * C_LIGHT_CODE);
+        double r_tr = 3 * r_s * (0.02 * mdot_edd_yuan18 / mdot_bondi) * (0.02 * mdot_edd_yuan18 / mdot_bondi);
+        
+        r_tr = DMIN(r_tr, x1min);  
+        r_tr = DMAX(r_tr, 3 * r_s);
+        
+        double mdot_r_tr_is_r_in = 0.02 * sqrt(3. * r_s / x1min) * mdot_edd_yuan18;
+
+        if (mdot_bondi > mdot_r_tr_is_r_in) // hot mode with r_tr > r_in 
+        {
+            double x2 = log10(mdot_crit / mdot_edd_yuan18);
+            double x1 = log10(mdot_bondi / mdot_edd_yuan18);
+            double a = (2.85 - 2 * log10(x1min / 3 / r_s) / (x2 - x1)) / ((x2 - x1) * (x2 - x1));
+            double b = (-1.15 - 3 * (x2 * x2 - x1 * x1) * a) / (x2 - x1) / 2; 
+            double c = 0.85 - 3 * x2 * x2 * a - 2 * x2 * b;
+            double d = log10(0.02) - (a * x2 * x2 * x2 + b * x2 * x2 + c * x2); 
+            double log_mdot_bondi_edd = log10(mdot_bondi / mdot_edd_yuan18);
+            mdot_bh = pow(10, a * log_mdot_bondi_edd * log_mdot_bondi_edd * log_mdot_bondi_edd + b * log_mdot_bondi_edd * log_mdot_bondi_edd + c * log_mdot_bondi_edd + d) * mdot_edd_yuan18;
+            mdot_wind = mdot_bondi - mdot_bh;
+        }
+        else // hot mode with r_tr <= r_in
+        {
+            mdot_bh = mdot_bondi * sqrt(3. * r_s / r_tr);
+            mdot_wind = mdot_bondi - mdot_bh;
+        }
+        
+        mdisk = DMAX(0.0, mdisk - dt * mdot_bondi); 
+
+        double gamma_gas = 5.0 / 3.0;
+        double gamma_wind = 5.0 / 3.0; 
+        v_wind = 0.2 * sqrt(All.G * BPP(n).BH_Mass / r_tr);
+        eps_wind = 0.5 / ((gamma_wind - 1.0) * gamma_gas) * All.G * BPP(n).BH_Mass / (3. * r_tr) * pow(x1min / r_tr, -2.0 * (gamma_wind - 1.0));
+       
+        mode_wind = 2; // HOT
+    
+
+        // TODO: not sure about the jet
+        mdot_jet = 0.5 * mdot_bh;
+        v_jet = 0.3 * C_LIGHT_CODE; 
+        eps_jet = 0;
+    }
+    else // mdot_bondi <= mdot_crit, no accretion
+    {
+        mdot_wind = 0;
+        v_wind = 0;
+        eps_wind = 0;   
+        mdot_bh = 0;
+        mode_wind = -1; // no wind
+    }
+
+    mdot = mdot_bh; /* the accretion rate onto the BH is the mdot_bh we just solved for */
+    BlackholeTempInfo[i].Yuan18_v_wind = v_wind;
+    BlackholeTempInfo[i].Yuan18_eps_wind = eps_wind;
+
+#endif
+
     /* alright, now we can FINALLY set the BH accretion rate */
     if(isnan(mdot)) {mdot=0;}
     BPP(n).BH_Mdot = DMAX(mdot,0);
+
 }
 
 
@@ -528,6 +700,19 @@ void set_blackhole_new_mass(int i, int n, double dt)
 #if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
     BPP(n).BH_AccretionDeficit += dMBH_continuous_accretion; // this is mass continuously accreted, which needs to be stochastically 'caught up to'
 #endif
+
+
+#ifdef BH_YUAN18_ACCRETION
+    double tau_ff = 0.5 * PI * sqrt(pow(x1min, 3.0) / (2. * All.G * m_bh)); // in yuan18.cpp, tau_ff should be determined by both tau_ff_bh and tau_ff_gal, whenStellarFeedbackFlag is defined. For simplicity, stellar feedback is not included yet.
+    double mdot_disk = mfall * expFactor(dt, tau_ff);
+    BPP(n).Yuan18_BH_Mass_disk += dt * mdot_disk;
+    BPP(n).Yuan18_BH_Mass_fall -= dt * mdot_disk;
+    // Real dt_bh_disk = mdot_disk > TINY_NUMBER ? 0.1 * std::min(mdisk / mdot_disk, tau_disk) : 0.1 * tau_disk;
+    BPP(n).Yuan18_BH_Mass_fall += dt * BPP(n).Yuan18_BH_Mdot_Bondi; // this term accounts for the mass that falls into the disk from the surrounding gas, which is not included in mdot_disk
+    // Real dt_bh_fall = mdot_disk > TINY_NUMBER ? 0.1 * std::min(mfall / mdot_bondi, tau_ff) : 0.1 * tau_ff;
+#endif
+
+
 #ifdef JET_DIRECTION_FROM_KERNEL_AND_SINK
     double mtot = BlackholeTempInfo[i].Mgas_in_Kernel + BPP(n).Mass;
     for(k=0; k<3; k++) { BlackholeTempInfo[i].BH_SurroundingGasCOM[k] /= mtot;} // this now stores the COM of the sink-gas system, relative to the sink position
@@ -551,8 +736,8 @@ void set_blackhole_drag(int i, int n, double dt)
     {
         double fac = BPP(n).BH_Mdot * dt / BPP(n).BH_Mass;
 #if (BH_DRAG == 2)
-        double meddington = bh_eddington_mdot(BPP(n).BH_Mass);
-        fac = meddington * dt / BPP(n).BH_Mass; /* make the force stronger to keep the BH from wandering */
+        double mdot_edd = bh_eddington_mdot(BPP(n).BH_Mass);
+        fac = mdot_edd * dt / BPP(n).BH_Mass; /* make the force stronger to keep the BH from wandering */
 #endif
         if(fac>1) fac=1;
         for(k = 0; k < 3; k++) {P[n].GravAccel[k] += All.cf_atime*All.cf_atime * fac * BlackholeTempInfo[i].BH_SurroundingGasVel[k] / dt;} // currently incompatible with hermite integrator -- need to update to Other_Accel
@@ -841,16 +1026,25 @@ void blackhole_final_operations(void)
         MstarBulge = BlackholeTempInfo[i].MstarBulge_in_Kernel;
 #endif
 
+/* ---- 新增：重新提取并计算 x1min 以便输出到日志 ---- */
+        double x1min_out = All.ForceSoftening[5];
+        if (BlackholeTempInfo[i].Bondi_WeightSum > 0) {
+            x1min_out = BlackholeTempInfo[i].BondiRadius_WeightedSum / BlackholeTempInfo[i].Bondi_WeightSum;
+        }
+
 #if defined(BH_OUTPUT_MOREINFO)
-        fprintf(FdBlackHolesDetails, "%.16g %llu  %g %g %g %g %g %g  %g %g %g %g %g %g %g %g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %g %g %g  %g %g %g\n",
+        fprintf(FdBlackHolesDetails, "%.16g %llu  %g %g %g %g %g %g  %g %g %g %g %g %g %g %g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %g %g %g  %g %g %g %g\n",
                 All.Time, (unsigned long long)P[n].ID,  P[n].Mass, BPP(n).BH_Mass, mass_disk, BPP(n).BH_Mdot, mdot_disk, dt, BPP(n).DensAroundStar*All.cf_a3inv, BlackholeTempInfo[i].BH_InternalEnergy, BlackholeTempInfo[i].Sfr_in_Kernel,
                 BlackholeTempInfo[i].Mgas_in_Kernel, BlackholeTempInfo[i].Mstar_in_Kernel, MgasBulge, MstarBulge, r0, P[n].Pos[0], P[n].Pos[1], P[n].Pos[2],  P[n].Vel[0], P[n].Vel[1], P[n].Vel[2],
-                BlackholeTempInfo[i].Jgas_in_Kernel[0], BlackholeTempInfo[i].Jgas_in_Kernel[1], BlackholeTempInfo[i].Jgas_in_Kernel[2], BlackholeTempInfo[i].Jstar_in_Kernel[0], BlackholeTempInfo[i].Jstar_in_Kernel[1], BlackholeTempInfo[i].Jstar_in_Kernel[2] ); fflush(FdBlackHolesDetails);
+                BlackholeTempInfo[i].Jgas_in_Kernel[0], BlackholeTempInfo[i].Jgas_in_Kernel[1], BlackholeTempInfo[i].Jgas_in_Kernel[2], BlackholeTempInfo[i].Jstar_in_Kernel[0], BlackholeTempInfo[i].Jstar_in_Kernel[1], BlackholeTempInfo[i].Jstar_in_Kernel[2], x1min_out ); fflush(FdBlackHolesDetails);
 #else
 
 #ifndef IO_REDUCED_MODE
-        fprintf(FdBlackHolesDetails, "BH=%llu %.16g %g %g %g %g %g %g %g   %2.16g %2.16g %2.16g\n", (unsigned long long)P[n].ID, All.Time, BPP(n).BH_Mass, mass_disk, P[n].Mass, BPP(n).BH_Mdot, mdot_disk,
-                P[n].DensAroundStar*All.cf_a3inv, BlackholeTempInfo[i].BH_InternalEnergy, P[n].Pos[0], P[n].Pos[1], P[n].Pos[2]); fflush(FdBlackHolesDetails);           // DAA: DensAroundStar is actually not defined in BHP->BPP...
+        /* 注意：我在字符串末尾加了一个 %g，并在参数最后加上了 x1min_out */
+        fprintf(FdBlackHolesDetails, "BH=%llu %.16g %g %g %g %g %g %g %g   %2.16g %2.16g %2.16g %g\n", 
+                (unsigned long long)P[n].ID, All.Time, BPP(n).BH_Mass, mass_disk, P[n].Mass, BPP(n).BH_Mdot, mdot_disk,
+                P[n].DensAroundStar*All.cf_a3inv, BlackholeTempInfo[i].BH_InternalEnergy, P[n].Pos[0], P[n].Pos[1], P[n].Pos[2], x1min_out); 
+        fflush(FdBlackHolesDetails);           
 #endif
 #endif
 
