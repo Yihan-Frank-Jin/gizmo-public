@@ -1,0 +1,11 @@
+*.o
+
+blackhole_run/
+
+.DS_Store
+
+Config.sh
+
+compile_time_info.c
+
+GIZMO_config.h
