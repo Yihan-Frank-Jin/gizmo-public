@@ -49,6 +49,16 @@ void blackhole_accretion(void)
 #if defined(BH_GRAVACCRETION) && (BH_GRAVACCRETION == 0)
     blackhole_environment_second_loop();    /* Here we compute quantities that require knowledge of previous environment variables --> Bulge-Disk kinematic decomposition for gravitational torque accretion  */
 #endif
+#ifdef BH_YUAN18_ACCRETION
+    /* blackhole_bondi_radius_loop MUST come after blackhole_environment_loop:
+     * it reads BH_InternalEnergy (normalized in bh_normalize_temp_info_struct)
+     * to derive R_bondi_rough and set a wider, physically correct search radius.
+     * blackhole_mass_flux_loop MUST come after this loop: it reads
+     * BondiRadius_WeightedSum / Bondi_WeightSum to locate the integration shell. */
+    blackhole_bondi_radius_loop();
+    /* This loop calculates the mass flux across the dynamically calculated Bondi radius */
+    blackhole_mass_flux_loop(); 
+#endif
     /*----------------------------------------------------------------------
      Now do a first set of local operations based on BH environment calculation:
      calculate mdot, dynamical friction, and other 'BH-centric' operations.
@@ -257,7 +267,7 @@ double bh_angleweight(double bh_lum_input, MyFloat bh_angle[3], double dx, doubl
         }
     }
 
-    static double expFactor(Real dt, Real tau) // A function to calculate (1 - exp(-dt / tau)) / dt
+    static double expFactor(double dt, double tau) // A function to calculate (1 - exp(-dt / tau)) / dt
         {
         if (dt < 0.01 * tau)
         {
@@ -550,20 +560,21 @@ void set_blackhole_mdot(int i, int n, double dt)
 
 
 #ifdef BH_YUAN18_ACCRETION
-    double x1min = 0.0;
-    double mdisk = BPP(n).Yuan18_Mass_disk
+    double mdisk = BPP(n).Yuan18_BH_Mass_disk;
 
     /* 获取上一阶段严格加权计算出的 x1min */
     if (BlackholeTempInfo[i].Bondi_WeightSum > 0) {
-        x1min = BlackholeTempInfo[i].BondiRadius_WeightedSum / BlackholeTempInfo[i].Bondi_WeightSum;
+        BlackholeTempInfo[i].Bondi_Radius_Weighted = BlackholeTempInfo[i].BondiRadius_WeightedSum / BlackholeTempInfo[i].Bondi_WeightSum;
     } else {
-        x1min = All.ForceSoftening[5]; 
+        BlackholeTempInfo[i].Bondi_Radius_Weighted = 0.0;
     }
+
+    double x1min = BlackholeTempInfo[i].Bondi_Radius_Weighted;
     
     double mdot_edd_yuan18 = bh_eddington_mdot(BPP(n).BH_Mass);
     double mdot_crit = mdotwind_cold(0.02 * mdot_edd_yuan18) + 0.02 * mdot_edd_yuan18;
 
-    double mdot_bondi = BPP(n).Yuan18_BH_Mdot_Bondi; // TODO: should be modified to a mass flux form!
+    double mdot_bondi = BlackholeTempInfo[i].Inward_Mass_Flux;
     double mdot_bh = 0, mdot_wind = 0, v_wind = 0, eps_wind = 0;
     double mdot_jet = 0, v_jet = 0, eps_jet = 0;
     int mode_wind = -1;
@@ -703,8 +714,8 @@ void set_blackhole_new_mass(int i, int n, double dt)
 
 
 #ifdef BH_YUAN18_ACCRETION
-    double tau_ff = 0.5 * PI * sqrt(pow(x1min, 3.0) / (2. * All.G * m_bh)); // in yuan18.cpp, tau_ff should be determined by both tau_ff_bh and tau_ff_gal, whenStellarFeedbackFlag is defined. For simplicity, stellar feedback is not included yet.
-    double mdot_disk = mfall * expFactor(dt, tau_ff);
+    double tau_ff = 0.5 * M_PI * sqrt(pow(BlackholeTempInfo[i].Bondi_Radius_Weighted, 3.0) / (2. * All.G * BPP(n).BH_Mass)); // in yuan18.cpp, tau_ff should be determined by both tau_ff_bh and tau_ff_gal, whenStellarFeedbackFlag is defined. For simplicity, stellar feedback is not included yet.
+    double mdot_disk = BPP(n).Yuan18_BH_Mass_fall * expFactor(dt, tau_ff);
     BPP(n).Yuan18_BH_Mass_disk += dt * mdot_disk;
     BPP(n).Yuan18_BH_Mass_fall -= dt * mdot_disk;
     // Real dt_bh_disk = mdot_disk > TINY_NUMBER ? 0.1 * std::min(mdisk / mdot_disk, tau_disk) : 0.1 * tau_disk;
@@ -1026,24 +1037,18 @@ void blackhole_final_operations(void)
         MstarBulge = BlackholeTempInfo[i].MstarBulge_in_Kernel;
 #endif
 
-/* ---- 新增：重新提取并计算 x1min 以便输出到日志 ---- */
-        double x1min_out = All.ForceSoftening[5];
-        if (BlackholeTempInfo[i].Bondi_WeightSum > 0) {
-            x1min_out = BlackholeTempInfo[i].BondiRadius_WeightedSum / BlackholeTempInfo[i].Bondi_WeightSum;
-        }
 
 #if defined(BH_OUTPUT_MOREINFO)
         fprintf(FdBlackHolesDetails, "%.16g %llu  %g %g %g %g %g %g  %g %g %g %g %g %g %g %g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %g %g %g  %g %g %g %g\n",
                 All.Time, (unsigned long long)P[n].ID,  P[n].Mass, BPP(n).BH_Mass, mass_disk, BPP(n).BH_Mdot, mdot_disk, dt, BPP(n).DensAroundStar*All.cf_a3inv, BlackholeTempInfo[i].BH_InternalEnergy, BlackholeTempInfo[i].Sfr_in_Kernel,
                 BlackholeTempInfo[i].Mgas_in_Kernel, BlackholeTempInfo[i].Mstar_in_Kernel, MgasBulge, MstarBulge, r0, P[n].Pos[0], P[n].Pos[1], P[n].Pos[2],  P[n].Vel[0], P[n].Vel[1], P[n].Vel[2],
-                BlackholeTempInfo[i].Jgas_in_Kernel[0], BlackholeTempInfo[i].Jgas_in_Kernel[1], BlackholeTempInfo[i].Jgas_in_Kernel[2], BlackholeTempInfo[i].Jstar_in_Kernel[0], BlackholeTempInfo[i].Jstar_in_Kernel[1], BlackholeTempInfo[i].Jstar_in_Kernel[2], x1min_out ); fflush(FdBlackHolesDetails);
+                BlackholeTempInfo[i].Jgas_in_Kernel[0], BlackholeTempInfo[i].Jgas_in_Kernel[1], BlackholeTempInfo[i].Jgas_in_Kernel[2], BlackholeTempInfo[i].Jstar_in_Kernel[0], BlackholeTempInfo[i].Jstar_in_Kernel[1], BlackholeTempInfo[i].Jstar_in_Kernel[2], BlackholeTempInfo[i].Bondi_Radius_Weighted ); fflush(FdBlackHolesDetails);
 #else
 
 #ifndef IO_REDUCED_MODE
-        /* 注意：我在字符串末尾加了一个 %g，并在参数最后加上了 x1min_out */
-        fprintf(FdBlackHolesDetails, "BH=%llu %.16g %g %g %g %g %g %g %g   %2.16g %2.16g %2.16g %g\n", 
+        fprintf(FdBlackHolesDetails, "BH=%llu %.16g %g %g %g %g %g %g %g   %2.16g %2.16g %2.16g\n", 
                 (unsigned long long)P[n].ID, All.Time, BPP(n).BH_Mass, mass_disk, P[n].Mass, BPP(n).BH_Mdot, mdot_disk,
-                P[n].DensAroundStar*All.cf_a3inv, BlackholeTempInfo[i].BH_InternalEnergy, P[n].Pos[0], P[n].Pos[1], P[n].Pos[2], x1min_out); 
+                P[n].DensAroundStar*All.cf_a3inv, BlackholeTempInfo[i].BH_InternalEnergy, P[n].Pos[0], P[n].Pos[1], P[n].Pos[2]); 
         fflush(FdBlackHolesDetails);           
 #endif
 #endif

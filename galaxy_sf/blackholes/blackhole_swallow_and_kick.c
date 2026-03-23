@@ -97,10 +97,7 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
     in->Luminosity = bh_lum_bol(in->Mdot, in->BH_Mass, i);
 #endif
 
-#ifdef BH_YUAN18_ACCRETION
-    in->Yuan18_v_wind = BlackholeTempInfo[j_tempinfo].Yuan18_v_wind;
-    in->Yuan18_f_accreted = BlackholeTempInfo[j_tempinfo].Yuan18_f_accreted;
-#endif    
+
 }
 
 

@@ -84,6 +84,7 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
 #ifdef BH_YUAN18_ACCRETION
     MyFloat BondiRadius_WeightedSum;
     MyFloat Bondi_WeightSum;
+    MyFloat Bondi_Radius_Weighted;
     MyFloat Inward_Mass_Flux;;
     MyFloat Yuan18_v_wind;
     MyFloat Yuan18_eps_wind;
@@ -109,6 +110,10 @@ int bhsink_isactive(int i);
 void blackhole_environment_loop(void);
 #ifdef BH_GRAVACCRETION
 void blackhole_environment_second_loop(void);
+#endif
+#ifdef BH_YUAN18_ACCRETION
+void blackhole_bondi_radius_loop(void); /* dedicated wide-search loop for weighted Bondi radius */
+void blackhole_mass_flux_loop(void); 
 #endif
 
 /* blackhole_swallow_and_kick.c */
