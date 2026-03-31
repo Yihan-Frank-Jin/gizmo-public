@@ -353,6 +353,7 @@ int blackhole_environment_evaluate(int target, int mode, int *exportflag, int *e
                         } /* if(vrel < vbound) */
                     } /* type check */
 #endif // BH_GRAVCAPTURE_GAS
+
                 } // ( (P[j].Mass > 0) && (P[j].Type != 5) && (P[j].ID != local.ID) ) - condition for entering primary loop
             } // numngb_inbox loop
         } // while(startnode)
@@ -437,7 +438,7 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
      * bh_normalize_temp_info_struct_after_environment_loop(), which ran
      * at the end of blackhole_environment_loop() before this loop starts. */
     double u_mean = BlackholeTempInfo[j_ti].BH_InternalEnergy;
- 
+
     double R_bondi_rough_phys = (u_mean > 0) ?
         All.G * in->BH_Mass / u_mean : 0.0;
  
@@ -640,8 +641,7 @@ CPU_Step[CPU_BLACKHOLES] += measure_time(); /* collect timings and reset clock f
 
 
 /* -----------------------------------------------------------------------------------------------------
- * 第三阶段环境循环 (Mass Flux Loop)：
- * 根据第一阶段计算出的 Bondi Radius，执行 Fibonacci 球面撒点积分来计算实际流入率
+ * Mass flux loop for BH_YUAN18_ACCRETION: Dedicated loop to compute the mass flux at the weighted Bondi radius.
  * ----------------------------------------------------------------------------------------------------- */
 #ifdef BH_YUAN18_ACCRETION
 
@@ -652,7 +652,7 @@ CPU_Step[CPU_BLACKHOLES] += measure_time(); /* collect timings and reset clock f
 struct INPUT_STRUCT_NAME
 {
     int NodeList[NODELISTLENGTH]; MyDouble Pos[3]; MyFloat Vel[3]; 
-    MyFloat R_flux_phys; // 我们需要积分的目标物理半径
+    MyFloat R_flux_phys; // Just the weighted Bondi radius.
 }
 *DATAIN_NAME, *DATAGET_NAME; 
 
@@ -661,7 +661,7 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
     int k, j_tempinfo = P[i].IndexMapToTempStruc; 
     for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k]; in->Vel[k]=P[i].Vel[k];} 
     
-    // 从第一遍循环中提取计算好的 Bondi 半径
+    /* Read the weighted Bondi radius computed in blackhole_bondi_radius_loop. */
     if (BlackholeTempInfo[j_tempinfo].Bondi_WeightSum > 0) {
         in->R_flux_phys = BlackholeTempInfo[j_tempinfo].BondiRadius_WeightedSum / BlackholeTempInfo[j_tempinfo].Bondi_WeightSum;
     } else {
@@ -686,9 +686,9 @@ int blackhole_mass_flux_evaluate(int target, int mode, int *exportflag, int *exp
     int startnode, numngb_inbox, listindex = 0, j, n; struct INPUT_STRUCT_NAME local; struct OUTPUT_STRUCT_NAME out; memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME)); 
     if(mode == 0) {INPUTFUNCTION_NAME(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];} 
     
-    if (local.R_flux_phys <= 0) return 0; // 如果半径无效，直接跳过
+    if (local.R_flux_phys <= 0) return 0; /* weighted Bondi radius unavailable; skip this BH */
     
-    // 关键：树搜索的半径需要足够大，以捕获边缘的粒子 (R_flux + h_gas)。这里保守设为 2 倍 R_flux
+    // We set the search radius to be twice the target radius to ensure we capture almost all particles that could contribute to the flux.
     double search_radius = 2.0 * local.R_flux_phys / All.cf_atime; 
 
     if(mode == 0) {startnode = All.MaxPart; } else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode; }
@@ -696,10 +696,10 @@ int blackhole_mass_flux_evaluate(int target, int mode, int *exportflag, int *exp
         while(startnode >= 0) {
             numngb_inbox = ngb_treefind_pairs_threads_targeted(local.Pos, search_radius, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, BH_NEIGHBOR_BITFLAG);
             if(numngb_inbox < 0) {return -2;} 
-            for(n = 0; n < numngb_inbox; n++) 
+            for(n = 0; n < numngb_inbox; n++)
             {
                 j = ngblist[n]; 
-                if((P[j].Mass <= 0)||(P[j].Hsml <= 0)||(P[j].Type != 0)) {continue;} // 只看气体
+                if((P[j].Mass <= 0)||(P[j].Hsml <= 0)||(P[j].Type != 0)) {continue;} /* gas particles only */
                 
                 int k; double dP[3], dv[3]; 
                 for(k=0;k<3;k++) {dP[k]=P[j].Pos[k]-local.Pos[k]; dv[k]=P[j].Vel[k]-local.Vel[k];} 
@@ -710,7 +710,7 @@ int blackhole_mass_flux_evaluate(int target, int mode, int *exportflag, int *exp
                 double r_dist_phys = r_dist_code * All.cf_atime;
                 double h_j_phys = PPP[j].Hsml * All.cf_atime;
                 
-                // 仅处理平滑核与积分球面相交的粒子
+                // Only dealing with the gas particles whose smoothing length overlaps with the target radius.
                 if (fabs(r_dist_phys - local.R_flux_phys) < h_j_phys) {
                     int N_fib = 1000; 
                     double dA_phys = 4.0 * M_PI * local.R_flux_phys * local.R_flux_phys / N_fib;

@@ -85,10 +85,14 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
     MyFloat BondiRadius_WeightedSum;
     MyFloat Bondi_WeightSum;
     MyFloat Bondi_Radius_Weighted;
-    MyFloat Inward_Mass_Flux;;
+    MyFloat Inward_Mass_Flux;
     MyFloat Yuan18_v_wind;
     MyFloat Yuan18_eps_wind;
-#endif    
+    MyFloat Yuan18_f_accreted;           /* mdot_bh / mdot_bondi; used by BH_WIND_KICK path */
+    MyFloat Yuan18_mdot_wind;            /* mdot_bondi - mdot_bh (>= 0) */
+    int     Yuan18_mode_wind;            /* 0=SUP, 1=SUB(cold), 2=HOT, -1=none */
+    MyFloat Yuan18_angle_weighted_sum;   /* normalization sum over eligible wind-injection neighbors */
+#endif
 }
 *BlackholeTempInfo;
 

@@ -217,7 +217,8 @@ double bh_angleweight(double bh_lum_input, MyFloat bh_angle[3], double dx, doubl
 }
 
 
-// TODO: The declaration for yuan18 related functions and global variables has not been done in blackhole.h yet.
+// Note: Yuan18 loop functions (blackhole_bondi_radius_loop, blackhole_mass_flux_loop) are declared in blackhole.h.
+// Static helper functions below are file-local and do not need header declarations.
 #if defined(BH_YUAN18_ACCRETION)
     static double mdotwind_cold(double mdot_bh)
     {
@@ -429,9 +430,6 @@ void set_blackhole_mdot(int i, int n, double dt)
         mdot = 4. * M_PI * AccretionFactor * All.G * All.G * BPP(n).BH_Mass * BPP(n).BH_Mass * rho / fac;
     }
 
-#ifdef BH_YUAN18_ACCRETION
-    BPP(n).Yuan18_BH_Mdot_Bondi = mdot;
-#endif
 #endif // ifdef BH_BONDI
 
 
@@ -560,9 +558,7 @@ void set_blackhole_mdot(int i, int n, double dt)
 
 
 #ifdef BH_YUAN18_ACCRETION
-    double mdisk = BPP(n).Yuan18_BH_Mass_disk;
-
-    /* 获取上一阶段严格加权计算出的 x1min */
+    /* Finalize the weighted Bondi radius computed in blackhole_bondi_radius_loop. */
     if (BlackholeTempInfo[i].Bondi_WeightSum > 0) {
         BlackholeTempInfo[i].Bondi_Radius_Weighted = BlackholeTempInfo[i].BondiRadius_WeightedSum / BlackholeTempInfo[i].Bondi_WeightSum;
     } else {
@@ -570,11 +566,13 @@ void set_blackhole_mdot(int i, int n, double dt)
     }
 
     double x1min = BlackholeTempInfo[i].Bondi_Radius_Weighted;
-    
+
     double mdot_edd_yuan18 = bh_eddington_mdot(BPP(n).BH_Mass);
     double mdot_crit = mdotwind_cold(0.02 * mdot_edd_yuan18) + 0.02 * mdot_edd_yuan18;
 
     double mdot_bondi = BlackholeTempInfo[i].Inward_Mass_Flux;
+    /* Persist the measured inflow rate so set_blackhole_new_mass can use it to feed Yuan18_BH_Mass_fall. */
+    BPP(n).Yuan18_BH_Mdot_Bondi = mdot_bondi;
     double mdot_bh = 0, mdot_wind = 0, v_wind = 0, eps_wind = 0;
     double mdot_jet = 0, v_jet = 0, eps_jet = 0;
     int mode_wind = -1;
@@ -593,8 +591,6 @@ void set_blackhole_mdot(int i, int n, double dt)
             double mdot_inn = mdot_bondi;
             mdot_bh = get_mdot_bh_cold(mdot_inn);
             mdot_wind = mdot_inn - mdot_bh;
-            mdisk = DMAX(0.0, mdisk - dt * mdot_inn); 
-            
             double l_bh_cold = 0.1 * mdot_bh * C_LIGHT_CODE * C_LIGHT_CODE;
             v_wind = 2.5e4 * pow(l_bh_cold / 1e45 * UNIT_ENERGY_IN_CGS / UNIT_TIME_IN_CGS, 0.4) / UNIT_VEL_IN_KMS;
             v_wind = DMIN(v_wind, 0.3 * C_LIGHT_CODE); 
@@ -617,27 +613,25 @@ void set_blackhole_mdot(int i, int n, double dt)
         if (mdot_bondi > mdot_r_tr_is_r_in) // hot mode with r_tr > r_in 
         {
             double x2 = log10(mdot_crit / mdot_edd_yuan18);
-            double x1 = log10(mdot_bondi / mdot_edd_yuan18);
+            double x1 = log10(mdot_r_tr_is_r_in / mdot_edd_yuan18); /* lower boundary of fitting range, not current mdot_bondi */
             double a = (2.85 - 2 * log10(x1min / 3 / r_s) / (x2 - x1)) / ((x2 - x1) * (x2 - x1));
             double b = (-1.15 - 3 * (x2 * x2 - x1 * x1) * a) / (x2 - x1) / 2; 
             double c = 0.85 - 3 * x2 * x2 * a - 2 * x2 * b;
             double d = log10(0.02) - (a * x2 * x2 * x2 + b * x2 * x2 + c * x2); 
             double log_mdot_bondi_edd = log10(mdot_bondi / mdot_edd_yuan18);
             mdot_bh = pow(10, a * log_mdot_bondi_edd * log_mdot_bondi_edd * log_mdot_bondi_edd + b * log_mdot_bondi_edd * log_mdot_bondi_edd + c * log_mdot_bondi_edd + d) * mdot_edd_yuan18;
-            mdot_wind = mdot_bondi - mdot_bh;
+            mdot_wind = DMAX(mdot_bondi - mdot_bh, 0.0);
         }
         else // hot mode with r_tr <= r_in
         {
             mdot_bh = mdot_bondi * sqrt(3. * r_s / r_tr);
             mdot_wind = mdot_bondi - mdot_bh;
         }
-        
-        mdisk = DMAX(0.0, mdisk - dt * mdot_bondi); 
 
         double gamma_gas = 5.0 / 3.0;
-        double gamma_wind = 5.0 / 3.0; 
+        double gamma_wind = 4.0 / 3.0; /* ADAF wind adiabatic index (radiation/relativistic), distinct from gamma_gas; yuan18.cpp static Real gamma_wind = 4.0/3 */
         v_wind = 0.2 * sqrt(All.G * BPP(n).BH_Mass / r_tr);
-        eps_wind = 0.5 / ((gamma_wind - 1.0) * gamma_gas) * All.G * BPP(n).BH_Mass / (3. * r_tr) * pow(x1min / r_tr, -2.0 * (gamma_wind - 1.0));
+        eps_wind = 0.5 / ((gamma_gas - 1.0) * gamma_gas) * All.G * BPP(n).BH_Mass / (3. * r_tr) * pow(x1min / r_tr, -2.0 * (gamma_wind - 1.0));
        
         mode_wind = 2; // HOT
     
@@ -715,12 +709,16 @@ void set_blackhole_new_mass(int i, int n, double dt)
 
 #ifdef BH_YUAN18_ACCRETION
     double tau_ff = 0.5 * M_PI * sqrt(pow(BlackholeTempInfo[i].Bondi_Radius_Weighted, 3.0) / (2. * All.G * BPP(n).BH_Mass)); // in yuan18.cpp, tau_ff should be determined by both tau_ff_bh and tau_ff_gal, whenStellarFeedbackFlag is defined. For simplicity, stellar feedback is not included yet.
+    /* Step 1: deplete disk by full Bondi inflow (mdot_bh + mdot_wind) — matches yuan18.cpp ordering. */
+    BPP(n).Yuan18_BH_Mass_disk -= dt * BPP(n).Yuan18_BH_Mdot_Bondi;
+    if(BPP(n).Yuan18_BH_Mass_disk < 0) {BPP(n).Yuan18_BH_Mass_disk = 0;}
+    /* Step 2: transfer from free-fall reservoir into disk. */
     double mdot_disk = BPP(n).Yuan18_BH_Mass_fall * expFactor(dt, tau_ff);
     BPP(n).Yuan18_BH_Mass_disk += dt * mdot_disk;
     BPP(n).Yuan18_BH_Mass_fall -= dt * mdot_disk;
     // Real dt_bh_disk = mdot_disk > TINY_NUMBER ? 0.1 * std::min(mdisk / mdot_disk, tau_disk) : 0.1 * tau_disk;
-    BPP(n).Yuan18_BH_Mass_fall += dt * BPP(n).Yuan18_BH_Mdot_Bondi; // this term accounts for the mass that falls into the disk from the surrounding gas, which is not included in mdot_disk
-    // Real dt_bh_fall = mdot_disk > TINY_NUMBER ? 0.1 * std::min(mfall / mdot_bondi, tau_ff) : 0.1 * tau_ff;
+    /* Step 3: Bondi inflow feeds the free-fall reservoir. */
+    BPP(n).Yuan18_BH_Mass_fall += dt * BPP(n).Yuan18_BH_Mdot_Bondi;
 #endif
 
 
