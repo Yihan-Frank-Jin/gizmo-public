@@ -2735,7 +2735,7 @@ extern ALIGN(32) struct particle_data
     MyFloat Yuan18_BH_Mass_fall;
     MyFloat Yuan18_BH_Mass_disk;
     MyFloat Yuan18_BH_Mdot_Bondi;
-    // According to yuan18.cpp, mdot_bondi is also tied with blackhole data structure. Not sure if in GIZMO we need to store it here as well.
+    MyFloat Yuan18_BH_Bondi_Radius; /* weighted Bondi radius from previous timestep [physical]; used as search-radius floor in bondi_radius_loop */
 #endif
 #endif  /* if defined(BLACK_HOLES) */
 #ifdef BH_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA

@@ -306,6 +306,7 @@
 #BH_GRAVACCRETION_STELLARFBCORR # account for additional acceleration-dependent retention from stellar FB in Mdot. cite Hopkins et al., arXiv:2103.10444, for both the analytic derivation of these scalings and the numerical methods/implementation.
 #BH_BONDI=0                     # Bondi-Hoyle style accretion model: 0=default (with velocity); 1=dont use gas velocity with sound speed; 2=variable-alpha tweak (Booth & Schaye 2009; requires GALSF). cite Springel, Di Matteo, and Hernquist, 2005, MNRAS, 361, 776
 #BH_YUAN18_ACCRETION            # accretion model from Yuan et al. 2018, ApJ, 857, 121. cite Yuan et al. 2018, ApJ, 857, 121
+#BH_YUAN18_WIND                 # smooth wind injection from Yuan18 two-mode AGN model (requires BH_YUAN18_ACCRETION). distributes mdot_wind momentum and thermal energy to neighbors weighted by cos^2(theta)*kernel. cite Yuan et al. 2018, ApJ, 857, 121; Zhang et al. 2025, arXiv:2504.06342
 ## ----------------------------------------------------------------------------------------------------
 # ----- feedback models/options
 ## ----------------------------------------------------------------------------------------------------

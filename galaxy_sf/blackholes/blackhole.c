@@ -65,6 +65,10 @@ void blackhole_accretion(void)
      No MPI comm necessary.
      ----------------------------------------------------------------------*/
     blackhole_properties_loop();       /* do 'BH-centric' operations such as dyn-fric, mdot, etc. This loop is at the end of this file.  */
+#ifdef BH_YUAN18_WIND
+    blackhole_yuan18_wind_angle_norm_loop();   /* sum ang_weight*kernel over eligible neighbors (sets Yuan18_angle_weighted_sum) */
+    blackhole_yuan18_wind_inject_loop(); /* inject mass, momentum, and thermal energy into neighbors */
+#endif
     /*----------------------------------------------------------------------
      Now we perform a second pass over the black hole environment.
      Re-evaluate the decision to stochastically swallow gas if we exceed eddington.
@@ -266,6 +270,30 @@ double bh_angleweight(double bh_lum_input, MyFloat bh_angle[3], double dx, doubl
             printf("Mdot_BH could not be calculated\n");
             exit(1);  
         }
+    }
+
+    /* Rescaling factor for radiative efficiency; yuan18.cpp reads this from the parameter file.
+     * Here hard-coded to 0.1 so that the thin-disk plateau becomes eta = 0.1 (standard choice).
+     * TODO: promote to a runtime parameter in All. */
+    static const double eff_em_factor = 0.1;
+
+    /* Piecewise radiative efficiency from Xie & Yuan 2012, as tabulated in Yuan et al. 2018 eq.25.
+     * Argument: mdot_norm = mdot_bh / mdot_edd (dimensionless).
+     * Return value: epsilon = L / (mdot_bh * c^2). */
+    static double GetRadEfficiency(double mdot_norm)
+    {
+        double epsilon;
+        if      (mdot_norm < 9.4e-5)
+            epsilon = 0.12  * pow(100.0 * mdot_norm,  0.59);
+        else if (mdot_norm < 5.0e-3)
+            epsilon = 0.026 * pow(100.0 * mdot_norm,  0.27);
+        else if (mdot_norm < 6.19e-3)
+            epsilon = 0.5   * pow(100.0 * mdot_norm,  4.53); /* bridge: avoids discontinuity */
+        else if (mdot_norm < 1.0)
+            epsilon = 0.057;                                   /* thin-disk plateau */
+        else
+            epsilon = 0.1197 * pow(100.0 * mdot_norm, -0.17); /* super-Edd, Jiang+2019 */
+        return eff_em_factor / 0.057 * epsilon;
     }
 
     static double expFactor(double dt, double tau) // A function to calculate (1 - exp(-dt / tau)) / dt
@@ -564,6 +592,9 @@ void set_blackhole_mdot(int i, int n, double dt)
     } else {
         BlackholeTempInfo[i].Bondi_Radius_Weighted = 0.0;
     }
+    /* Persist for use as search-radius floor in the next timestep's bondi_radius_loop. */
+    if (BlackholeTempInfo[i].Bondi_Radius_Weighted > 0)
+        BPP(n).Yuan18_BH_Bondi_Radius = BlackholeTempInfo[i].Bondi_Radius_Weighted;
 
     double x1min = BlackholeTempInfo[i].Bondi_Radius_Weighted;
 
@@ -584,7 +615,7 @@ void set_blackhole_mdot(int i, int n, double dt)
             mdot_bh = 0.5874 * pow(mdot_bondi / mdot_edd_yuan18, 1.0593) * mdot_edd_yuan18;
             mdot_wind = mdot_bondi - mdot_bh;
             v_wind = 0.333153 * pow(mdot_bh / mdot_edd_yuan18, -0.0848) * C_LIGHT_CODE;
-            mode_wind = 0; // SUP
+            mode_wind = 3; // SUP (matching yuan18.cpp OutflowMode enum)
         }
         else 
         {
@@ -594,7 +625,7 @@ void set_blackhole_mdot(int i, int n, double dt)
             double l_bh_cold = 0.1 * mdot_bh * C_LIGHT_CODE * C_LIGHT_CODE;
             v_wind = 2.5e4 * pow(l_bh_cold / 1e45 * UNIT_ENERGY_IN_CGS / UNIT_TIME_IN_CGS, 0.4) / UNIT_VEL_IN_KMS;
             v_wind = DMIN(v_wind, 0.3 * C_LIGHT_CODE); 
-            mode_wind = 1; //SUB
+            mode_wind = 2; // SUB (matching yuan18.cpp OutflowMode enum)
         } 
        
         double gamma = 5.0 / 3.0;
@@ -633,7 +664,7 @@ void set_blackhole_mdot(int i, int n, double dt)
         v_wind = 0.2 * sqrt(All.G * BPP(n).BH_Mass / r_tr);
         eps_wind = 0.5 / ((gamma_gas - 1.0) * gamma_gas) * All.G * BPP(n).BH_Mass / (3. * r_tr) * pow(x1min / r_tr, -2.0 * (gamma_wind - 1.0));
        
-        mode_wind = 2; // HOT
+        mode_wind = 1; // HOT (matching yuan18.cpp OutflowMode enum)
     
 
         // TODO: not sure about the jet
@@ -647,12 +678,17 @@ void set_blackhole_mdot(int i, int n, double dt)
         v_wind = 0;
         eps_wind = 0;   
         mdot_bh = 0;
-        mode_wind = -1; // no wind
+        mode_wind = 0; // NONE (matching yuan18.cpp OutflowMode enum)
     }
 
     mdot = mdot_bh; /* the accretion rate onto the BH is the mdot_bh we just solved for */
-    BlackholeTempInfo[i].Yuan18_v_wind = v_wind;
-    BlackholeTempInfo[i].Yuan18_eps_wind = eps_wind;
+    BlackholeTempInfo[i].Yuan18_v_wind     = v_wind;
+    BlackholeTempInfo[i].Yuan18_eps_wind   = eps_wind;
+    BlackholeTempInfo[i].Yuan18_f_accreted = (mdot_bondi > 0) ? DMAX(mdot_bh / mdot_bondi, 0.0) : 0.0;
+    BlackholeTempInfo[i].Yuan18_mdot_wind  = DMAX(mdot_wind, 0.0);
+    BlackholeTempInfo[i].Yuan18_mode_wind  = mode_wind;
+    double mdot_norm = (mdot_edd_yuan18 > 0) ? mdot_bh / mdot_edd_yuan18 : 0.0;
+    BlackholeTempInfo[i].Yuan18_L_rad = GetRadEfficiency(mdot_norm) * mdot_bh * C_LIGHT_CODE * C_LIGHT_CODE;
 
 #endif
 

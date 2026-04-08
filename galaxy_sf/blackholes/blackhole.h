@@ -90,8 +90,9 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
     MyFloat Yuan18_eps_wind;
     MyFloat Yuan18_f_accreted;           /* mdot_bh / mdot_bondi; used by BH_WIND_KICK path */
     MyFloat Yuan18_mdot_wind;            /* mdot_bondi - mdot_bh (>= 0) */
-    int     Yuan18_mode_wind;            /* 0=SUP, 1=SUB(cold), 2=HOT, -1=none */
+    int     Yuan18_mode_wind;            /* matches yuan18.cpp OutflowMode: 0=NONE, 1=HOT, 2=SUB, 3=SUP, 4=JET */
     MyFloat Yuan18_angle_weighted_sum;   /* normalization sum over eligible wind-injection neighbors */
+    MyFloat Yuan18_L_rad;                /* eps_rad * mdot_bh * c^2 [code energy/time] */
 #endif
 }
 *BlackholeTempInfo;
@@ -117,7 +118,11 @@ void blackhole_environment_second_loop(void);
 #endif
 #ifdef BH_YUAN18_ACCRETION
 void blackhole_bondi_radius_loop(void); /* dedicated wide-search loop for weighted Bondi radius */
-void blackhole_mass_flux_loop(void); 
+void blackhole_mass_flux_loop(void);
+#endif
+#ifdef BH_YUAN18_WIND
+void blackhole_yuan18_wind_angle_norm_loop(void);   /* angular-weight normalization sum over neighbors */
+void blackhole_yuan18_wind_inject_loop(void);        /* momentum + thermal energy injection into neighbors */
 #endif
 
 /* blackhole_swallow_and_kick.c */

@@ -56,7 +56,6 @@ struct INPUT_STRUCT_NAME
 
 #ifdef BH_YUAN18_ACCRETION
     MyFloat Yuan18_v_wind;
-    MyFloat Yuan18_f_accreted;
     MyFloat Yuan18_eps_wind;
 #endif
 }
@@ -280,11 +279,7 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 #ifdef BH_WIND_KICK
                     if(P[j].Type == 0)
                     {
-                        #ifdef BH_YUAN18_ACCRETION
-                            f_accreted = local.Yuan18_f_accreted; /* Use a pseudo 'f_accreted' to realize yuan18 model */
-                        #else
-                            f_accreted = All.BAL_f_accretion; /* Pure GIZMO: if particle is gas, only a fraction gets accreted in these particular modules */
-#endif
+                        f_accreted = All.BAL_f_accretion; /* if particle is gas, only a fraction gets accreted in these particular modules */
 #ifndef BH_GRAVCAPTURE_GAS
                         if((All.BlackHoleFeedbackFactor > 0) && (All.BlackHoleFeedbackFactor != 1.)) {f_accreted /= All.BlackHoleFeedbackFactor;} else {if(All.BAL_v_outflow > 0) f_accreted = 1./(1. + fabs(1.*BH_WIND_KICK)*All.BlackHoleRadiativeEfficiency*C_LIGHT_CODE/(All.BAL_v_outflow));}
                         if((bh_mass_withdisk - local.Mass) <= 0) {f_accreted=0;} // DAA: no need to accrete gas particle to enforce mass conservation (we will simply kick),  note that here the particle mass P.Mass is larger than the physical BH mass P.BH_Mass
@@ -425,11 +420,7 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
                         double Mass_initial = Mass_j; // save this for possible IO below
                         Mass_j *= (1-f_accreted);
 #ifdef BH_WIND_KICK     /* BAL kicking operations. NOTE: we have two separate BAL wind models, particle kicking and smooth wind model. This is where we do the particle kicking BAL model. This should also work when there is alpha-disk. */
-                        #ifdef BH_YUAN18_ACCRETION
-                            double v_kick = local.Yuan18_v_wind; /* Use wind speed from yuan18 */
-                        #else
-                            double v_kick = All.BAL_v_outflow;
-                        #endif
+                        double v_kick = All.BAL_v_outflow;
                         double dir[3]; for(k=0;k<3;k++) {dir[k]=dpos[k];} // DAA: default direction is radially outwards
 #if defined(COSMIC_RAY_FLUID) && defined(BH_COSMIC_RAYS) /* inject cosmic rays alongside wind injection */
                         double dEcr = All.BH_CosmicRay_Injection_Efficiency * Mass_j * (All.BAL_f_accretion/(1.-All.BAL_f_accretion)) * C_LIGHT_CODE*C_LIGHT_CODE;
@@ -1195,9 +1186,318 @@ double target_mass_for_wind_spawning(int i)
     return All.BAL_wind_particle_mass;
 #endif
 
-#endif // BH_WIND_SPAWN clause
+#endif // BH_WIND_SPAWN clause 
     return 0; // no well-defined answer, this shouldn't be called in this instance
 }
+
+
+/* =========================================================================
+ * Yuan18 smooth wind injection loops (BH_YUAN18_WIND)
+ *
+ * Loop 1: blackhole_yuan18_wind_angle_norm_loop
+ *   Accumulates angular-weight * kernel * mass normalization sum over
+ *   eligible gas neighbors within the weighted Bondi radius.
+ *
+ * Loop 2: blackhole_yuan18_wind_inject_loop
+ *   Deposits wind momentum and thermal energy into eligible gas neighbors,
+ *   normalized by the sum from Loop 1.
+ *
+ * Angular distributions (matching yuan18.cpp InnerX1 defaults):
+ *   HOT (mode=1): |cos theta| in [0.342, 0.866]  (30-70 deg from pole), uniform weight
+ *   SUB (mode=2): full sphere, weight = cos^2(theta)
+ *   SUP (mode=3): |cos theta| > 0.866  (< 30 deg from pole), uniform weight
+ *   NONE (mode=0): no wind
+ * ========================================================================= */
+#ifdef BH_YUAN18_WIND
+
+#ifndef YUAN18_COS_ANG1_HOT
+#define YUAN18_COS_ANG1_HOT  0.8660   /* cos(30 deg) = upper bound |cos theta| for HOT */
+#endif
+#ifndef YUAN18_COS_ANG2_HOT
+#define YUAN18_COS_ANG2_HOT  0.3420   /* cos(70 deg) = lower bound |cos theta| for HOT */
+#endif
+#ifndef YUAN18_COS_ANG_SUP
+#define YUAN18_COS_ANG_SUP   0.8660   /* cos(30 deg) = lower bound |cos theta| for SUP */
+#endif
+
+/* Mode codes match yuan18.cpp enum OutflowMode: NONE=0, HOT=1, SUB=2, SUP=3, JET=4 */
+static inline double yuan18_angular_weight(double abs_cos_theta, int mode_wind)
+{
+    switch(mode_wind) {
+        case 1: /* HOT: biconical shell 30-70 deg from pole */
+            if(abs_cos_theta >= YUAN18_COS_ANG2_HOT && abs_cos_theta <= YUAN18_COS_ANG1_HOT) return 1.0;
+            return 0;
+        case 2: /* SUB: full sphere, cos^2 weight */
+            return abs_cos_theta * abs_cos_theta;
+        case 3: /* SUP: polar cap < 30 deg */
+            if(abs_cos_theta > YUAN18_COS_ANG_SUP) return 1.0;
+            return 0;
+        default: return 0; /* NONE=0 or JET=4: no wind */
+    }
+}
+
+
+/* ---- Yuan18 Loop 1: angular-weight normalization ---- */
+
+#define CORE_FUNCTION_NAME yuan18_wind_angle_norm_evaluate
+#define CONDITIONFUNCTION_FOR_EVALUATION if(bhsink_isactive(i))
+#include "../../system/code_block_xchange_initialize.h"
+
+struct INPUT_STRUCT_NAME
+{
+    int NodeList[NODELISTLENGTH]; MyDouble Pos[3]; MyFloat Vel[3];
+    MyFloat R_bondi_phys;
+    MyFloat Jdir[3];
+    int mode_wind;
+}
+*DATAIN_NAME, *DATAGET_NAME;
+
+static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
+{
+    int k, j_ti = P[i].IndexMapToTempStruc;
+    for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k]; in->Vel[k]=P[i].Vel[k];}
+    in->R_bondi_phys = BlackholeTempInfo[j_ti].Bondi_Radius_Weighted;
+    in->mode_wind = BlackholeTempInfo[j_ti].Yuan18_mode_wind;
+    double jmag2 = 0;
+    for(k=0;k<3;k++) {jmag2 += BlackholeTempInfo[j_ti].Jgas_in_Kernel[k] * BlackholeTempInfo[j_ti].Jgas_in_Kernel[k];}
+    if(jmag2 > 0) {
+        double jmag_inv = 1.0 / sqrt(jmag2);
+        for(k=0;k<3;k++) {in->Jdir[k] = BlackholeTempInfo[j_ti].Jgas_in_Kernel[k] * jmag_inv;}
+    } else {
+        in->Jdir[0] = in->Jdir[1] = 0; in->Jdir[2] = 1.0;
+    }
+}
+
+struct OUTPUT_STRUCT_NAME
+{
+    MyFloat angle_weighted_sum;
+}
+*DATARESULT_NAME, *DATAOUT_NAME;
+
+#define ASSIGN_ADD_PRESET(x,y,mode) (mode == 0 ? (x=y) : (x+=y))
+static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
+{
+    int target = P[i].IndexMapToTempStruc;
+    ASSIGN_ADD_PRESET(BlackholeTempInfo[target].Yuan18_angle_weighted_sum, out->angle_weighted_sum, mode);
+}
+
+int yuan18_wind_angle_norm_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
+{
+    int startnode, numngb_inbox, listindex = 0, j, n; struct INPUT_STRUCT_NAME local; struct OUTPUT_STRUCT_NAME out; memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
+    if(mode == 0) {INPUTFUNCTION_NAME(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];}
+    if(local.R_bondi_phys <= 0 || local.mode_wind <= 0) return 0; /* mode 0 = NONE */
+
+    double search_radius = local.R_bondi_phys / All.cf_atime; /* comoving */
+    double hinv_bondi = 1.0 / local.R_bondi_phys;
+    double hinv3_bondi = hinv_bondi * hinv_bondi * hinv_bondi;
+    double hinv4_bondi = hinv_bondi * hinv3_bondi;
+
+    if(mode == 0) {startnode = All.MaxPart;} else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;}
+    while(startnode >= 0) {
+        while(startnode >= 0) {
+            numngb_inbox = ngb_treefind_pairs_threads_targeted(local.Pos, search_radius, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, BH_NEIGHBOR_BITFLAG);
+            if(numngb_inbox < 0) {return -2;}
+            for(n = 0; n < numngb_inbox; n++)
+            {
+                j = ngblist[n];
+                if((P[j].Mass <= 0)||(P[j].Hsml <= 0)||(P[j].Type != 0)) continue;
+                int k; double dP[3];
+                for(k=0;k<3;k++) {dP[k] = P[j].Pos[k] - local.Pos[k];}
+                NEAREST_XYZ(dP[0],dP[1],dP[2],-1);
+                double r2 = dP[0]*dP[0] + dP[1]*dP[1] + dP[2]*dP[2];
+                double r_code = sqrt(r2);
+                if(r_code <= 0) continue;
+                double r_phys = r_code * All.cf_atime;
+                if(r_phys > local.R_bondi_phys) continue;
+
+                double cos_theta = (dP[0]*local.Jdir[0] + dP[1]*local.Jdir[1] + dP[2]*local.Jdir[2]) / r_code;
+                double ang_wt = yuan18_angular_weight(fabs(cos_theta), local.mode_wind);
+                if(ang_wt <= 0) continue;
+
+                double u = r_phys * hinv_bondi;
+                double wk, dwk;
+                kernel_main(u, hinv3_bondi, hinv4_bondi, &wk, &dwk, -1);
+                out.angle_weighted_sum += ang_wt * wk * P[j].Mass;
+            }
+        }
+        if(mode == 1) {listindex++; if(listindex < NODELISTLENGTH) {startnode = DATAGET_NAME[target].NodeList[listindex]; if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}}}
+    }
+    if(mode == 0) {OUTPUTFUNCTION_NAME(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;}
+    return 0;
+}
+
+void blackhole_yuan18_wind_angle_norm_loop(void)
+{
+#include "../../system/code_block_xchange_perform_ops_malloc.h"
+#include "../../system/code_block_xchange_perform_ops.h"
+#include "../../system/code_block_xchange_perform_ops_demalloc.h"
+CPU_Step[CPU_BLACKHOLES] += measure_time();
+}
+#include "../../system/code_block_xchange_finalize.h"
+
+/* ---- Yuan18 Loop 2: wind momentum + thermal energy injection ---- */
+
+#define CORE_FUNCTION_NAME yuan18_wind_inject_evaluate
+#define CONDITIONFUNCTION_FOR_EVALUATION if(bhsink_isactive(i))
+#include "../../system/code_block_xchange_initialize.h"
+
+struct INPUT_STRUCT_NAME
+{
+    int NodeList[NODELISTLENGTH]; MyDouble Pos[3]; MyFloat Vel[3];
+    MyFloat R_bondi_phys;
+    MyFloat Jdir[3];
+    int mode_wind;
+    MyFloat mdot_wind;
+    MyFloat v_wind;
+    MyFloat eps_wind;
+    MyFloat angle_weighted_sum;
+    MyFloat dt;
+}
+*DATAIN_NAME, *DATAGET_NAME;
+
+static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
+{
+    int k, j_ti = P[i].IndexMapToTempStruc;
+    for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k]; in->Vel[k]=P[i].Vel[k];}
+    in->R_bondi_phys       = BlackholeTempInfo[j_ti].Bondi_Radius_Weighted;
+    in->mode_wind          = BlackholeTempInfo[j_ti].Yuan18_mode_wind;
+    in->mdot_wind          = BlackholeTempInfo[j_ti].Yuan18_mdot_wind;
+    in->v_wind             = BlackholeTempInfo[j_ti].Yuan18_v_wind;
+    in->eps_wind           = BlackholeTempInfo[j_ti].Yuan18_eps_wind;
+    in->angle_weighted_sum = BlackholeTempInfo[j_ti].Yuan18_angle_weighted_sum;
+    in->dt                 = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i);
+    double jmag2 = 0;
+    for(k=0;k<3;k++) {jmag2 += BlackholeTempInfo[j_ti].Jgas_in_Kernel[k] * BlackholeTempInfo[j_ti].Jgas_in_Kernel[k];}
+    if(jmag2 > 0) {
+        double jmag_inv = 1.0 / sqrt(jmag2);
+        for(k=0;k<3;k++) {in->Jdir[k] = BlackholeTempInfo[j_ti].Jgas_in_Kernel[k] * jmag_inv;}
+    } else {
+        in->Jdir[0] = in->Jdir[1] = 0; in->Jdir[2] = 1.0;
+    }
+}
+
+struct OUTPUT_STRUCT_NAME
+{
+    MyFloat dummy; /* all writes go directly to gas particles via OMP atomics */
+}
+*DATARESULT_NAME, *DATAOUT_NAME;
+
+#define ASSIGN_ADD_PRESET(x,y,mode) (mode == 0 ? (x=y) : (x+=y))
+static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
+{
+    /* nothing to accumulate back to BH — injection applied directly to gas particles */
+}
+
+int yuan18_wind_inject_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
+{
+    int startnode, numngb_inbox, listindex = 0, j, n; struct INPUT_STRUCT_NAME local; struct OUTPUT_STRUCT_NAME out; memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
+    if(mode == 0) {INPUTFUNCTION_NAME(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];}
+    if(local.R_bondi_phys <= 0 || local.mode_wind <= 0) return 0;
+    if(local.angle_weighted_sum <= 0 || local.mdot_wind <= 0) return 0;
+
+    double search_radius = local.R_bondi_phys / All.cf_atime;
+    double hinv_bondi = 1.0 / local.R_bondi_phys;
+    double hinv3_bondi = hinv_bondi * hinv_bondi * hinv_bondi;
+    double hinv4_bondi = hinv_bondi * hinv3_bondi;
+    double pdot_wind = local.mdot_wind * local.v_wind;   /* momentum rate [code] */
+    double edot_wind = local.mdot_wind * local.eps_wind; /* thermal energy rate [code] */
+
+    if(mode == 0) {startnode = All.MaxPart;} else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;}
+    while(startnode >= 0) {
+        while(startnode >= 0) {
+            numngb_inbox = ngb_treefind_pairs_threads_targeted(local.Pos, search_radius, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, BH_NEIGHBOR_BITFLAG);
+            if(numngb_inbox < 0) {return -2;}
+            for(n = 0; n < numngb_inbox; n++)
+            {
+                j = ngblist[n];
+                if((P[j].Mass <= 0)||(P[j].Hsml <= 0)||(P[j].Type != 0)) continue;
+                int k; double dP[3];
+                for(k=0;k<3;k++) {dP[k] = P[j].Pos[k] - local.Pos[k];}
+                NEAREST_XYZ(dP[0],dP[1],dP[2],-1);
+                double r2 = dP[0]*dP[0] + dP[1]*dP[1] + dP[2]*dP[2];
+                double r_code = sqrt(r2);
+                if(r_code <= 0) continue;
+                double r_phys = r_code * All.cf_atime;
+                if(r_phys > local.R_bondi_phys) continue;
+
+                double cos_theta = (dP[0]*local.Jdir[0] + dP[1]*local.Jdir[1] + dP[2]*local.Jdir[2]) / r_code;
+                double ang_wt = yuan18_angular_weight(fabs(cos_theta), local.mode_wind);
+                if(ang_wt <= 0) continue;
+
+                double u = r_phys * hinv_bondi;
+                double wk, dwk;
+                kernel_main(u, hinv3_bondi, hinv4_bondi, &wk, &dwk, -1);
+                /* radial unit vector outward from BH (comoving coordinates) */
+                double dir[3]; for(k=0;k<3;k++) {dir[k] = dP[k] / r_code;}
+
+                /* velocity cap: skip if gas already moving radially outward faster than v_wind.
+                 * P[j].Vel = a * v_phys (comoving peculiar), so physical radial velocity = dvr/cf_atime */
+                double dvr = 0;
+                for(k=0;k<3;k++) {dvr += (P[j].Vel[k] - local.Vel[k]) * dir[k];}
+                if(dvr / All.cf_atime >= local.v_wind) continue;
+
+                /* authoritative atomic mass read before any modifications */
+                double mass_j;
+                #pragma omp atomic read
+                mass_j = P[j].Mass;
+                if(mass_j <= 0) continue;
+
+                double wt_norm = ang_wt * wk * mass_j / local.angle_weighted_sum;
+
+                /* wind mass deposited into this particle; compute post-injection mass */
+                double dm_wind_j = wt_norm * local.mdot_wind * local.dt;
+                double mass_j_new = mass_j + dm_wind_j;
+
+                /* momentum kick: dp = wt_norm * pdot * dt; dv = dp / m_new
+                 * P[j].Vel stores a_scale * v_peculiar, so physical kick needs * cf_atime */
+                double dv_phys = wt_norm * pdot_wind * local.dt / mass_j_new;
+                for(k=0;k<3;k++) {
+                    double dvel = dv_phys * All.cf_atime * dir[k];
+                    #pragma omp atomic
+                    P[j].Vel[k] += dvel;
+                    #pragma omp atomic
+                    SphP[j].VelPred[k] += dvel;
+                    #pragma omp atomic
+                    P[j].dp[k] += mass_j_new * dvel; /* momentum change to gravity tree */
+                }
+
+                /* thermal energy: mix wind energy into post-injection mass.
+                 * new_u = (u_old * m_old + dE) / m_new  =>  delta_u = new_u - u_old */
+                double u_j;
+                #pragma omp atomic read
+                u_j = SphP[j].InternalEnergy;
+                double dE = wt_norm * edot_wind * local.dt;
+                double dU = (u_j * mass_j + dE) / mass_j_new - u_j;
+                #pragma omp atomic
+                SphP[j].InternalEnergy += dU;
+                #pragma omp atomic
+                SphP[j].InternalEnergyPred += dU;
+
+                /* write wind mass addition back to particle */
+                #pragma omp atomic
+                P[j].Mass += dm_wind_j;
+#ifdef HYDRO_MESHLESS_FINITE_VOLUME
+                #pragma omp atomic
+                SphP[j].MassTrue += dm_wind_j;
+#endif
+            }
+        }
+        if(mode == 1) {listindex++; if(listindex < NODELISTLENGTH) {startnode = DATAGET_NAME[target].NodeList[listindex]; if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}}}
+    }
+    if(mode == 0) {OUTPUTFUNCTION_NAME(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;}
+    return 0;
+}
+
+void blackhole_yuan18_wind_inject_loop(void)
+{
+#include "../../system/code_block_xchange_perform_ops_malloc.h"
+#include "../../system/code_block_xchange_perform_ops.h"
+#include "../../system/code_block_xchange_perform_ops_demalloc.h"
+CPU_Step[CPU_BLACKHOLES] += measure_time();
+}
+#include "../../system/code_block_xchange_finalize.h"
+
+#endif // BH_YUAN18_WIND
 
 
 #endif // top-level flag

@@ -443,14 +443,24 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
         All.G * in->BH_Mass / u_mean : 0.0;
  
     double R_search_phys = BH_YUAN18_BONDI_SEARCH_FACTOR * R_bondi_rough_phys;
- 
+
     /* Hard cap: never search more than BH_YUAN18_BONDI_HSML_MAX * Hsml.
      * This prevents O(N) searches in very cold, low-u environments. */
     double R_cap_phys = BH_YUAN18_BONDI_HSML_MAX * PPP[i].Hsml * All.cf_atime;
     R_search_phys = DMIN(R_search_phys, R_cap_phys);
- 
-    /* Floor: always search at least one kernel radius so that if R_bondi_rough
-     * is tiny the loop still has something useful to do. */
+
+    /* Persistence floor (applied after the cap so it can override it):
+     * never let the search drop below 2x the Bondi radius measured in the
+     * previous timestep.  Without this, a hot near-BH environment (feedback
+     * bubble) biases u_mean high, collapsing R_bondi_rough, and the cap then
+     * locks the search in at an ever-shrinking radius — a self-reinforcing
+     * underestimate.  On the first timestep Yuan18_BH_Bondi_Radius == 0,
+     * so this clause is a no-op until we have a real measurement. */
+    double R_prev_phys = BPP(i).Yuan18_BH_Bondi_Radius;
+    if (R_prev_phys > 0)
+        R_search_phys = DMAX(R_search_phys, 2.0 * R_prev_phys);
+
+    /* Absolute floor: always search at least one kernel radius. */
     R_search_phys = DMAX(R_search_phys, PPP[i].Hsml * All.cf_atime);
  
     in->R_search_code = (MyFloat)(R_search_phys / All.cf_atime);  /* comoving code units */
@@ -661,11 +671,13 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
     int k, j_tempinfo = P[i].IndexMapToTempStruc; 
     for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k]; in->Vel[k]=P[i].Vel[k];} 
     
-    /* Read the weighted Bondi radius computed in blackhole_bondi_radius_loop. */
+    /* Read the weighted Bondi radius computed in blackhole_bondi_radius_loop.
+     * Fall back to the persisted previous-timestep value if this step found
+     * no inflowing gas (prevents mdot_bondi from being zeroed spuriously). */
     if (BlackholeTempInfo[j_tempinfo].Bondi_WeightSum > 0) {
         in->R_flux_phys = BlackholeTempInfo[j_tempinfo].BondiRadius_WeightedSum / BlackholeTempInfo[j_tempinfo].Bondi_WeightSum;
     } else {
-        in->R_flux_phys = 0.0;
+        in->R_flux_phys = BPP(i).Yuan18_BH_Bondi_Radius; /* 0 on first step — fine, loop skips */
     }
 }
 
@@ -695,7 +707,7 @@ int blackhole_mass_flux_evaluate(int target, int mode, int *exportflag, int *exp
     while(startnode >= 0) {
         while(startnode >= 0) {
             numngb_inbox = ngb_treefind_pairs_threads_targeted(local.Pos, search_radius, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, BH_NEIGHBOR_BITFLAG);
-            if(numngb_inbox < 0) {return -2;} 
+            if(numngb_inbox < 0) {return -2;}
             for(n = 0; n < numngb_inbox; n++)
             {
                 j = ngblist[n]; 
@@ -703,8 +715,8 @@ int blackhole_mass_flux_evaluate(int target, int mode, int *exportflag, int *exp
                 
                 int k; double dP[3], dv[3]; 
                 for(k=0;k<3;k++) {dP[k]=P[j].Pos[k]-local.Pos[k]; dv[k]=P[j].Vel[k]-local.Vel[k];} 
-                NEAREST_XYZ(dP[0],dP[1],dP[2],-1);
-                NGB_SHEARBOX_BOUNDARY_VELCORR_(local.Pos,P[j].Pos,dv,-1); 
+                NEAREST_XYZ(dP[0],dP[1],dP[2],-1); /* wrap the positions to the nearest image */
+                NGB_SHEARBOX_BOUNDARY_VELCORR_(local.Pos,P[j].Pos,dv,-1);  /* wrap velocities for shearing boxes if needed */
                 
                 double r_dist_code = sqrt(dP[0]*dP[0] + dP[1]*dP[1] + dP[2]*dP[2]);
                 double r_dist_phys = r_dist_code * All.cf_atime;
@@ -712,7 +724,7 @@ int blackhole_mass_flux_evaluate(int target, int mode, int *exportflag, int *exp
                 
                 // Only dealing with the gas particles whose smoothing length overlaps with the target radius.
                 if (fabs(r_dist_phys - local.R_flux_phys) < h_j_phys) {
-                    int N_fib = 1000; 
+                    int N_fib = 1000; // TODO: a better choice here is to make it self-adaptive with the resolution
                     double dA_phys = 4.0 * M_PI * local.R_flux_phys * local.R_flux_phys / N_fib;
                     double mass_flux_j = 0;
                     
