@@ -485,6 +485,12 @@ void init(void)
 #ifdef BH_COUNTPROGS
                 BPP(i).BH_CountProgs = 1;
 #endif
+#ifdef BH_YUAN18_ACCRETION
+                BPP(i).Yuan18_BH_Bondi_Radius = 0;
+                BPP(i).Yuan18_BH_Mass_fall    = 0;
+                BPP(i).Yuan18_BH_Mass_disk    = 0;
+                BPP(i).Yuan18_BH_Mdot_Bondi   = 0;
+#endif
             }
 #ifdef BH_INTERACT_ON_GAS_TIMESTEP
             P[i].dt_since_last_gas_search = 0;

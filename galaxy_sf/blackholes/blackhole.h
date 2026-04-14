@@ -82,10 +82,11 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
     MyFloat kernel_norm_topass_in_swallowloop;
 #endif
 #ifdef BH_YUAN18_ACCRETION
+#define YUAN18_N_FIB 1000
     MyFloat BondiRadius_WeightedSum;
     MyFloat Bondi_WeightSum;
     MyFloat Bondi_Radius_Weighted;
-    MyFloat Inward_Mass_Flux;
+    MyFloat Mass_Influx_p[YUAN18_N_FIB]; /* signed rho*v_rad*dA at each Fibonacci point; MPI-additive */
     MyFloat Yuan18_v_wind;
     MyFloat Yuan18_eps_wind;
     MyFloat Yuan18_f_accreted;           /* mdot_bh / mdot_bondi; used by BH_WIND_KICK path */

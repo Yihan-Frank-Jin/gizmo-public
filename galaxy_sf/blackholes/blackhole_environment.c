@@ -381,44 +381,23 @@ void blackhole_environment_loop(void)
  *
  * WHY A SEPARATE LOOP:
  *   The weighted Bondi radius r_B_wtd = sum(w_j * r_B_j) / sum(w_j), where
- *   r_B_j = G*M_BH / u_j and w_j = m_j*|v_rad_j|/r_j, can easily exceed the
+ *   r_B_j = G*M_BH / u_j and w_j = m_j*|v_rad_j|, can easily exceed the
  *   BH kernel radius Hsml.  The first environment loop only searches within
- *   Hsml, so any particle whose Bondi radius places it outside the kernel is
- *   never seen — exactly the particles that dominate the weighted average.
+ *   Hsml, so this dedicated loop uses a wider search radius.
  *
- * STRATEGY:
- *   After the first environment loop, BH_InternalEnergy holds the kernel
- *   mass-weighted mean internal energy u_mean.  We use
- *       R_bondi_rough = G * M_BH / u_mean
- *   as a proxy for the ambient Bondi radius and search out to
- *       R_search = BH_YUAN18_BONDI_SEARCH_FACTOR * R_bondi_rough,
- *   capped at BH_YUAN18_BONDI_HSML_MAX * Hsml to prevent runaway searches
- *   in cold environments.  Within that sphere we accumulate the properly
- *   weighted Bondi radius from every inflowing gas particle found.
- *
- * CAVEATS / TUNING:
- *   - BH_YUAN18_BONDI_SEARCH_FACTOR (default 3): how many times R_bondi_rough
- *     to extend the search.  If r_B_wtd consistently saturates near the cap,
- *     raise this or BH_YUAN18_BONDI_HSML_MAX.
- *   - BH_YUAN18_BONDI_HSML_MAX (default 10): maximum search in units of Hsml.
- *     Raising this increases cost linearly with volume; lowering it risks
- *     missing the true Bondi radius again.
- *   - If BH_InternalEnergy == 0 (no gas in kernel), the search falls back to
- *     exactly Hsml so the loop is never vacuous.
+ * SEARCH RADIUS STRATEGY:
+ *   Primary: 2 * Yuan18_BH_Bondi_Radius (Bondi radius from the previous timestep).
+ *   First-step fallback: 2 * R_bondi_textbook = 2 * G*M_BH / u_mean, where
+ *     u_mean is the kernel-mass-weighted mean internal energy from the first
+ *     environment loop.  If u_mean == 0, fall back to the BH kernel radius Hsml.
+ *   Absolute floor: always at least Hsml.
  * ============================================================================ */
 #ifdef BH_YUAN18_ACCRETION
- 
-#ifndef BH_YUAN18_BONDI_SEARCH_FACTOR
-#define BH_YUAN18_BONDI_SEARCH_FACTOR  3.0   /* search to this multiple of R_bondi_rough */
-#endif
-#ifndef BH_YUAN18_BONDI_HSML_MAX
-#define BH_YUAN18_BONDI_HSML_MAX      10.0   /* hard cap in units of BH kernel radius     */
-#endif
- 
+
 #define CORE_FUNCTION_NAME blackhole_bondi_radius_evaluate
 #define CONDITIONFUNCTION_FOR_EVALUATION if(bhsink_isactive(i))
 #include "../../system/code_block_xchange_initialize.h"
- 
+
 struct INPUT_STRUCT_NAME
 {
     int NodeList[NODELISTLENGTH];
@@ -427,42 +406,30 @@ struct INPUT_STRUCT_NAME
     MyFloat  R_search_code;  /* tree-search radius in comoving code units */
 }
 *DATAIN_NAME, *DATAGET_NAME;
- 
+
 static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
 {
     int k, j_ti = P[i].IndexMapToTempStruc;
     for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k]; in->Vel[k]=P[i].Vel[k];}
     in->BH_Mass = BPP(i).BH_Mass;
- 
-    /* BH_InternalEnergy is already mass-weighted and normalised by
-     * bh_normalize_temp_info_struct_after_environment_loop(), which ran
-     * at the end of blackhole_environment_loop() before this loop starts. */
-    double u_mean = BlackholeTempInfo[j_ti].BH_InternalEnergy;
 
-    double R_bondi_rough_phys = (u_mean > 0) ?
-        All.G * in->BH_Mass / u_mean : 0.0;
- 
-    double R_search_phys = BH_YUAN18_BONDI_SEARCH_FACTOR * R_bondi_rough_phys;
-
-    /* Hard cap: never search more than BH_YUAN18_BONDI_HSML_MAX * Hsml.
-     * This prevents O(N) searches in very cold, low-u environments. */
-    double R_cap_phys = BH_YUAN18_BONDI_HSML_MAX * PPP[i].Hsml * All.cf_atime;
-    R_search_phys = DMIN(R_search_phys, R_cap_phys);
-
-    /* Persistence floor (applied after the cap so it can override it):
-     * never let the search drop below 2x the Bondi radius measured in the
-     * previous timestep.  Without this, a hot near-BH environment (feedback
-     * bubble) biases u_mean high, collapsing R_bondi_rough, and the cap then
-     * locks the search in at an ever-shrinking radius — a self-reinforcing
-     * underestimate.  On the first timestep Yuan18_BH_Bondi_Radius == 0,
-     * so this clause is a no-op until we have a real measurement. */
+    double R_search_phys;
     double R_prev_phys = BPP(i).Yuan18_BH_Bondi_Radius;
-    if (R_prev_phys > 0)
-        R_search_phys = DMAX(R_search_phys, 2.0 * R_prev_phys);
+    if (R_prev_phys > 0) {
+        /* Normal case: search 2x the Bondi radius measured last timestep. */
+        R_search_phys = 2.0 * R_prev_phys;
+    } else {
+        /* First timestep: no prior Bondi radius available.
+         * Fall back to textbook formula: R_bondi = G*M_BH / u_mean. */
+        double u_mean = BlackholeTempInfo[j_ti].BH_InternalEnergy;
+        double R_bondi_textbook = (u_mean > 0) ? All.G * in->BH_Mass / u_mean
+                                               : PPP[i].Hsml * All.cf_atime;
+        R_search_phys = 2.0 * R_bondi_textbook;
+    }
 
     /* Absolute floor: always search at least one kernel radius. */
     R_search_phys = DMAX(R_search_phys, PPP[i].Hsml * All.cf_atime);
- 
+
     in->R_search_code = (MyFloat)(R_search_phys / All.cf_atime);  /* comoving code units */
 }
  
@@ -483,7 +450,7 @@ static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, in
 /*!  Core neighbor loop for the dedicated Bondi radius pass.
  *   For every inflowing gas particle within R_search_code we compute
  *       r_B_j  = G * M_BH / u_j          (individual Bondi radius, physical)
- *       w_j    = m_j * |v_rad_j| / r_j   (mass-inflow-rate proxy weight)
+ *       w_j    = m_j * |v_rad_j|           (mass-inflow-rate proxy weight)
  *   and accumulate the weighted sum.  The final weighted Bondi radius is
  *   formed in set_blackhole_mdot as BondiRadius_WeightedSum / Bondi_WeightSum.
  *
@@ -536,12 +503,10 @@ int blackhole_bondi_radius_evaluate(int target, int mode, int *exportflag, int *
                 /* Individual Bondi radius for this particle: r_B = G*M_BH/u_j (physical) */
                 double r_bondi_j = All.G * local.BH_Mass / u_j;
  
-                double r_phys   = r_dist * All.cf_atime;
-                /* Weight = mass-inflow-rate proxy: m_j * |v_rad| / r_phys.
-                 * This weights each particle by how much it contributes to
-                 * the mass flux, so particles that dominate the inflow
-                 * dominate the Bondi radius estimate. */
-                double weight_j = P[j].Mass * fabs(v_rad) / r_phys;
+                /* Weight = inward momentum: m_j * |v_rad|.
+                 * Weights each particle's Bondi radius by how hard it is
+                 * pushing inward, without the 1/r bias of a flux-based weight. */
+                double weight_j = P[j].Mass * fabs(v_rad);
  
                 out.BondiRadius_WeightedSum += (MyFloat)(weight_j * r_bondi_j);
                 out.Bondi_WeightSum         += (MyFloat)(weight_j);
@@ -682,94 +647,98 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
 }
 
 struct OUTPUT_STRUCT_NAME
-{ 
-    MyFloat Inward_Mass_Flux;
+{
+    MyFloat Mass_Influx_p[YUAN18_N_FIB]; /* signed rho*v_rad*dA at each Fibonacci point */
 }
 *DATARESULT_NAME, *DATAOUT_NAME;
 
 static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
 {
-    int target = P[i].IndexMapToTempStruc;
-    ASSIGN_ADD(BlackholeTempInfo[target].Inward_Mass_Flux, out->Inward_Mass_Flux, mode);
+    int target = P[i].IndexMapToTempStruc, p;
+    for(p = 0; p < YUAN18_N_FIB; p++) {ASSIGN_ADD(BlackholeTempInfo[target].Mass_Influx_p[p], out->Mass_Influx_p[p], mode);}
 }
 
 int blackhole_mass_flux_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
 {
-    int startnode, numngb_inbox, listindex = 0, j, n; struct INPUT_STRUCT_NAME local; struct OUTPUT_STRUCT_NAME out; memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME)); 
-    if(mode == 0) {INPUTFUNCTION_NAME(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];} 
-    
-    if (local.R_flux_phys <= 0) return 0; /* weighted Bondi radius unavailable; skip this BH */
-    
-    // We set the search radius to be twice the target radius to ensure we capture almost all particles that could contribute to the flux.
-    double search_radius = 2.0 * local.R_flux_phys / All.cf_atime; 
+    int startnode, numngb_inbox, listindex = 0, j, n; struct INPUT_STRUCT_NAME local; struct OUTPUT_STRUCT_NAME out; memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
+    if(mode == 0) {INPUTFUNCTION_NAME(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];}
 
-    if(mode == 0) {startnode = All.MaxPart; } else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode; }
+    if(local.R_flux_phys <= 0) return 0; /* weighted Bondi radius unavailable; skip this BH */
+
+    int N_fib = YUAN18_N_FIB;
+    double dA_phys = 4.0 * M_PI * local.R_flux_phys * local.R_flux_phys / N_fib;
+    double phi_golden = M_PI * (3.0 - sqrt(5.0));
+
+    /* Pre-compute unit vectors for the Fibonacci points on the Bondi sphere */
+    double n_fib[YUAN18_N_FIB][3];
+    for(int p = 0; p < N_fib; p++) {
+        double y  = 1.0 - (p / (double)(N_fib - 1)) * 2.0;
+        double rc = sqrt(1.0 - y * y);
+        double th = phi_golden * p;
+        n_fib[p][0] = cos(th) * rc;
+        n_fib[p][1] = y;
+        n_fib[p][2] = sin(th) * rc;
+    }
+
+    /* SPH density and radial-momentum-density numerator at each Fibonacci sphere point.
+     * rho_p[p]      = sum_j m_j * W(|r_p - r_j|, h_j)
+     * vrad_num_p[p] = sum_j m_j * v_rad_j * W(|r_p - r_j|, h_j)
+     * => v_rad(r_p) = vrad_num_p[p] / rho_p[p]                    */
+    double rho_p[YUAN18_N_FIB], vrad_num_p[YUAN18_N_FIB];
+    memset(rho_p,      0, sizeof(rho_p));
+    memset(vrad_num_p, 0, sizeof(vrad_num_p));
+
+    /* Search radius: R_bondi + max kernel reach.  2*R_bondi is a safe upper bound
+     * assuming h_j < R_bondi for particles near the sphere. */
+    double search_radius = 2.0 * local.R_flux_phys / All.cf_atime;
+
+    if(mode == 0) {startnode = All.MaxPart;} else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;}
     while(startnode >= 0) {
         while(startnode >= 0) {
             numngb_inbox = ngb_treefind_pairs_threads_targeted(local.Pos, search_radius, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, BH_NEIGHBOR_BITFLAG);
             if(numngb_inbox < 0) {return -2;}
             for(n = 0; n < numngb_inbox; n++)
             {
-                j = ngblist[n]; 
-                if((P[j].Mass <= 0)||(P[j].Hsml <= 0)||(P[j].Type != 0)) {continue;} /* gas particles only */
-                
-                int k; double dP[3], dv[3]; 
-                for(k=0;k<3;k++) {dP[k]=P[j].Pos[k]-local.Pos[k]; dv[k]=P[j].Vel[k]-local.Vel[k];} 
-                NEAREST_XYZ(dP[0],dP[1],dP[2],-1); /* wrap the positions to the nearest image */
-                NGB_SHEARBOX_BOUNDARY_VELCORR_(local.Pos,P[j].Pos,dv,-1);  /* wrap velocities for shearing boxes if needed */
-                
-                double r_dist_code = sqrt(dP[0]*dP[0] + dP[1]*dP[1] + dP[2]*dP[2]);
-                double r_dist_phys = r_dist_code * All.cf_atime;
+                j = ngblist[n];
+                if((P[j].Mass <= 0) || (PPP[j].Hsml <= 0) || (P[j].Type != 0)) {continue;} /* gas only */
+
+                int k; double dP[3], dv[3];
+                for(k=0;k<3;k++) {dP[k]=P[j].Pos[k]-local.Pos[k]; dv[k]=P[j].Vel[k]-local.Vel[k];}
+                NEAREST_XYZ(dP[0],dP[1],dP[2],-1);
+                NGB_SHEARBOX_BOUNDARY_VELCORR_(local.Pos,P[j].Pos,dv,-1);
+
+                double r_j_phys[3], dv_phys[3];
+                for(k=0;k<3;k++) {r_j_phys[k] = dP[k] * All.cf_atime; dv_phys[k] = dv[k] / All.cf_atime;}
+
                 double h_j_phys = PPP[j].Hsml * All.cf_atime;
-                
-                // Only dealing with the gas particles whose smoothing length overlaps with the target radius.
-                if (fabs(r_dist_phys - local.R_flux_phys) < h_j_phys) {
-                    int N_fib = 1000; // TODO: a better choice here is to make it self-adaptive with the resolution
-                    double dA_phys = 4.0 * M_PI * local.R_flux_phys * local.R_flux_phys / N_fib;
-                    double mass_flux_j = 0;
-                    
-                    double dv_phys[3] = {dv[0]/All.cf_atime, dv[1]/All.cf_atime, dv[2]/All.cf_atime};
-                    double phi_golden = M_PI * (3.0 - sqrt(5.0)); 
-                    
-                    for (int p = 0; p < N_fib; p++) {
-                        double y_coord = 1.0 - (p / (double)(N_fib - 1)) * 2.0; 
-                        double radius_cyl = sqrt(1.0 - y_coord * y_coord);
-                        double theta = phi_golden * p;
-                        
-                        double r_p_phys[3] = {cos(theta) * radius_cyl * local.R_flux_phys, 
-                                              y_coord * local.R_flux_phys, 
-                                              sin(theta) * radius_cyl * local.R_flux_phys};
-                        
-                        double dr_phys[3] = {r_p_phys[0] - dP[0]*All.cf_atime, 
-                                             r_p_phys[1] - dP[1]*All.cf_atime, 
-                                             r_p_phys[2] - dP[2]*All.cf_atime};
-                        double dist2_phys = dr_phys[0]*dr_phys[0] + dr_phys[1]*dr_phys[1] + dr_phys[2]*dr_phys[2];
-                        
-                        if (dist2_phys < h_j_phys * h_j_phys) {
-                            double dist_phys = sqrt(dist2_phys);
-                            double pos[3] = {r_p_phys[0]/local.R_flux_phys, r_p_phys[1]/local.R_flux_phys, r_p_phys[2]/local.R_flux_phys}; 
-                            
-                            double v_rad = dv_phys[0]*pos[0] + dv_phys[1]*pos[1] + dv_phys[2]*pos[2];
-                            
-                            if (v_rad < 0) { 
-                                double wk, dwk;
-                                double u = dist_phys / h_j_phys;
-                                double hinv_j = 1.0 / h_j_phys;
-                                double hinv3_j = hinv_j * hinv_j * hinv_j;
-                                double hinv4_j = hinv_j * hinv3_j;
-                                
-                                kernel_main(u, hinv3_j, hinv4_j, &wk, &dwk, -1);
-                                mass_flux_j += P[j].Mass * (- v_rad) * wk * dA_phys;
-                            }
-                        }
-                    }
-                    out.Inward_Mass_Flux += mass_flux_j;
+                double hinv = 1.0 / h_j_phys, hinv3 = hinv*hinv*hinv, hinv4 = hinv*hinv3;
+
+                for(int p = 0; p < N_fib; p++) {
+                    double dr[3];
+                    for(k=0;k<3;k++) dr[k] = n_fib[p][k] * local.R_flux_phys - r_j_phys[k];
+                    double dist2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
+                    if(dist2 >= h_j_phys * h_j_phys) {continue;}
+
+                    double wk, dwk;
+                    kernel_main(sqrt(dist2) * hinv, hinv3, hinv4, &wk, &dwk, -1);
+
+                    rho_p[p]      += P[j].Mass * wk;
+                    vrad_num_p[p] += P[j].Mass * (dv_phys[0]*n_fib[p][0] + dv_phys[1]*n_fib[p][1] + dv_phys[2]*n_fib[p][2]) * wk;
                 }
-            } 
-        } 
-        if(mode == 1) {listindex++; if(listindex < NODELISTLENGTH) {startnode = DATAGET_NAME[target].NodeList[listindex]; if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode; }}}
+            }
+        }
+        if(mode == 1) {listindex++; if(listindex < NODELISTLENGTH) {startnode = DATAGET_NAME[target].NodeList[listindex]; if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}}}
     }
-    if(mode == 0) {OUTPUTFUNCTION_NAME(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;} 
+
+    /* Compute signed mass flux rho*v_rad*dA at each sphere point and store in out.
+     * Sign check deferred to set_blackhole_mdot AFTER full MPI accumulation. */
+    for(int p = 0; p < N_fib; p++) {
+        if(rho_p[p] <= 0) {continue;}
+        double v_rad = vrad_num_p[p] / rho_p[p];
+        out.Mass_Influx_p[p] = rho_p[p] * v_rad * dA_phys;
+    }
+
+    if(mode == 0) {OUTPUTFUNCTION_NAME(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;}
     return 0;
 }
 
