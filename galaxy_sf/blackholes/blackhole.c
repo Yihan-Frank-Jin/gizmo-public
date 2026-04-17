@@ -67,7 +67,8 @@ void blackhole_accretion(void)
     blackhole_properties_loop();       /* do 'BH-centric' operations such as dyn-fric, mdot, etc. This loop is at the end of this file.  */
 #ifdef BH_YUAN18_WIND
     blackhole_yuan18_wind_angle_norm_loop();   /* sum ang_weight*kernel over eligible neighbors (sets Yuan18_angle_weighted_sum) */
-    blackhole_yuan18_wind_inject_loop(); /* inject mass, momentum, and thermal energy into neighbors */
+    blackhole_yuan18_wind_inject_loop();       /* inject mass, momentum, and thermal energy into neighbors */
+    blackhole_yuan18_remove_loop();            /* excise gas particles within the injection sphere */
 #endif
     /*----------------------------------------------------------------------
      Now we perform a second pass over the black hole environment.
@@ -602,30 +603,23 @@ void set_blackhole_mdot(int i, int n, double dt)
     double mdot_crit = mdotwind_cold(0.02 * mdot_edd_yuan18) + 0.02 * mdot_edd_yuan18;
 
     /* Sum inward mass flux over Fibonacci sphere points after full MPI accumulation.
-     * Mass_Influx_p[p] = rho(r_p)*v_rad(r_p)*dA (signed); negative = inflow. */
+     * v_rad(r_p) = Σ_j (m_j/ρ_j) v_rad_j W(r_p-r_j, h_j) = yuan18_vrad_p[p]  (physical)
+     * rho(r_p)  = Σ_j m_j W(r_p-r_j, h_j)                 = yuan18_rho_p[p]   (physical)
+     * flux_p = rho(r_p) * v_rad(r_p) * dA_phys; negative = inflow -> positive mdot_bondi */
+    double R_bondi = x1min; /* physical; 0 on first step if no inflowing gas found */
+    double dA_phys = (R_bondi > 0) ? 4.0 * M_PI * R_bondi * R_bondi / YUAN18_N_FIB : 0.0;
     double mdot_bondi = 0;
-    int n_inward_total = 0; double sum_influx_abs = 0;
     for(int p = 0; p < YUAN18_N_FIB; p++) {
-        if(BlackholeTempInfo[i].Mass_Influx_p[p] < 0) {
-            mdot_bondi += -BlackholeTempInfo[i].Mass_Influx_p[p];
-            n_inward_total++;
-            sum_influx_abs += fabs(BlackholeTempInfo[i].Mass_Influx_p[p]);
-        }
-    }
-    /* DEBUG: show per-point flux after full MPI accumulation */
-    if(All.Time > 29.999 && All.Time < 30.005) {
-        double p0=BlackholeTempInfo[i].Mass_Influx_p[0], p10=BlackholeTempInfo[i].Mass_Influx_p[10];
-        double p100=BlackholeTempInfo[i].Mass_Influx_p[100], p500=BlackholeTempInfo[i].Mass_Influx_p[500];
-        printf("YUAN18_DEBUG[mdot] t=%.6g R_B=%.6g mdot_bondi=%.6g n_inward=%d flux[0]=%.6g flux[10]=%.6g flux[100]=%.6g flux[500]=%.6g\n",
-               All.Time, BlackholeTempInfo[i].Bondi_Radius_Weighted, mdot_bondi, n_inward_total,
-               p0, p10, p100, p500);
-        fflush(stdout);
+        double flux_p = (double)BlackholeTempInfo[i].yuan18_rho_p[p]
+                      * (double)BlackholeTempInfo[i].yuan18_vrad_p[p] * dA_phys;
+        if(flux_p < 0) { mdot_bondi += -flux_p; }
     }
     /* Persist the measured inflow rate so set_blackhole_new_mass can use it to feed Yuan18_BH_Mass_fall. */
     BPP(n).Yuan18_BH_Mdot_Bondi = mdot_bondi;
     double mdot_bh = 0, mdot_wind = 0, v_wind = 0, eps_wind = 0;
     double mdot_jet = 0, v_jet = 0, eps_jet = 0;
     int mode_wind = 0; /* NONE; all branches assign this explicitly */
+    double r_inject = 0; /* injection surface radius (physical): r_tr (hot) or R_bondi (cold/super) */
 
     if (mdot_bondi > mdot_crit) // cold mode
     {
@@ -648,13 +642,14 @@ void set_blackhole_mdot(int i, int n, double dt)
         } 
        
         double gamma = 5.0 / 3.0;
-        eps_wind = (130 / UNIT_VEL_IN_KMS) * (130 / UNIT_VEL_IN_KMS) / ((gamma - 1.0) * gamma); 
+        eps_wind = (130 / UNIT_VEL_IN_KMS) * (130 / UNIT_VEL_IN_KMS) / ((gamma - 1.0) * gamma);
+        r_inject = x1min; /* cold/super modes: injection surface is the weighted Bondi radius */
     }
     else if (mdot_bondi > MIN_REAL_NUMBER) // hot mode
     {
         double r_s = 2 * All.G * BPP(n).BH_Mass / (C_LIGHT_CODE * C_LIGHT_CODE);
         double r_tr = 3 * r_s * (0.02 * mdot_edd_yuan18 / mdot_bondi) * (0.02 * mdot_edd_yuan18 / mdot_bondi);
-        
+                
         r_tr = DMIN(r_tr, x1min);  
         r_tr = DMAX(r_tr, 3 * r_s);
         
@@ -684,7 +679,7 @@ void set_blackhole_mdot(int i, int n, double dt)
         eps_wind = 0.5 / ((gamma_gas - 1.0) * gamma_gas) * All.G * BPP(n).BH_Mass / (3. * r_tr) * pow(x1min / r_tr, -2.0 * (gamma_wind - 1.0));
        
         mode_wind = 1; // HOT (matching yuan18.cpp OutflowMode enum)
-    
+        r_inject = r_tr; /* hot mode: injection surface is the ADAF truncation radius */
 
         // TODO: not sure about the jet
         mdot_jet = 0.5 * mdot_bh;
@@ -705,6 +700,7 @@ void set_blackhole_mdot(int i, int n, double dt)
     BlackholeTempInfo[i].Yuan18_eps_wind   = eps_wind;
     BlackholeTempInfo[i].Yuan18_mdot_wind  = DMAX(mdot_wind, 0.0);
     BlackholeTempInfo[i].Yuan18_mode_wind  = mode_wind;
+    BlackholeTempInfo[i].Yuan18_r_inject   = r_inject;
     double mdot_norm = (mdot_edd_yuan18 > 0) ? mdot_bh / mdot_edd_yuan18 : 0.0;
     BlackholeTempInfo[i].Yuan18_L_rad = GetRadEfficiency(mdot_norm) * mdot_bh * C_LIGHT_CODE * C_LIGHT_CODE;
 
@@ -1095,10 +1091,11 @@ void blackhole_final_operations(void)
          *               Mgas Mstar MgasBulge MstarBulge r0 Pos[3] Vel[3] Jgas[3] Jstar[3] Bondi_R_Weighted
          * Column 29 (BH_YUAN18_ACCRETION only): Yuan18_BH_Mdot_Bondi  */
 #ifdef BH_YUAN18_ACCRETION
-        fprintf(FdBlackHolesDetails, "%.16g %llu  %g %g %g %g %g %g  %g %g %g %g %g %g %g %g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %g %g %g  %g %g %g %g %g\n",
+        fprintf(FdBlackHolesDetails, "%.16g %llu  %g %g %g %g %g %g  %g %g %g %g %g %g %g %g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %g %g %g  %g %g %g %g %g  %g %g %g\n",
                 All.Time, (unsigned long long)P[n].ID,  P[n].Mass, BPP(n).BH_Mass, mass_disk, BPP(n).BH_Mdot, mdot_disk, dt, BPP(n).DensAroundStar*All.cf_a3inv, BlackholeTempInfo[i].BH_InternalEnergy, BlackholeTempInfo[i].Sfr_in_Kernel,
                 BlackholeTempInfo[i].Mgas_in_Kernel, BlackholeTempInfo[i].Mstar_in_Kernel, MgasBulge, MstarBulge, r0, P[n].Pos[0], P[n].Pos[1], P[n].Pos[2],  P[n].Vel[0], P[n].Vel[1], P[n].Vel[2],
-                BlackholeTempInfo[i].Jgas_in_Kernel[0], BlackholeTempInfo[i].Jgas_in_Kernel[1], BlackholeTempInfo[i].Jgas_in_Kernel[2], BlackholeTempInfo[i].Jstar_in_Kernel[0], BlackholeTempInfo[i].Jstar_in_Kernel[1], BlackholeTempInfo[i].Jstar_in_Kernel[2], BlackholeTempInfo[i].Bondi_Radius_Weighted, BPP(n).Yuan18_BH_Mdot_Bondi ); fflush(FdBlackHolesDetails);
+                BlackholeTempInfo[i].Jgas_in_Kernel[0], BlackholeTempInfo[i].Jgas_in_Kernel[1], BlackholeTempInfo[i].Jgas_in_Kernel[2], BlackholeTempInfo[i].Jstar_in_Kernel[0], BlackholeTempInfo[i].Jstar_in_Kernel[1], BlackholeTempInfo[i].Jstar_in_Kernel[2], BlackholeTempInfo[i].Bondi_Radius_Weighted, BPP(n).Yuan18_BH_Mdot_Bondi,
+                BlackholeTempInfo[i].debug_n_inward, BlackholeTempInfo[i].debug_rho_sum, BlackholeTempInfo[i].debug_vrad_sum); fflush(FdBlackHolesDetails);
 #else
         fprintf(FdBlackHolesDetails, "%.16g %llu  %g %g %g %g %g %g  %g %g %g %g %g %g %g %g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %g %g %g  %g %g %g\n",
                 All.Time, (unsigned long long)P[n].ID,  P[n].Mass, BPP(n).BH_Mass, mass_disk, BPP(n).BH_Mdot, mdot_disk, dt, BPP(n).DensAroundStar*All.cf_a3inv, BlackholeTempInfo[i].BH_InternalEnergy, BlackholeTempInfo[i].Sfr_in_Kernel,

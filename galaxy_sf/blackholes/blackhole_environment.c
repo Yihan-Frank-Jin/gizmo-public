@@ -648,14 +648,24 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
 
 struct OUTPUT_STRUCT_NAME
 {
-    MyFloat Mass_Influx_p[YUAN18_N_FIB]; /* signed rho*v_rad*dA at each Fibonacci point */
+    MyFloat yuan18_rho_p[YUAN18_N_FIB];  /* Σ_j m_j W: SPH density at each Fibonacci point [physical] */
+    MyFloat yuan18_vrad_p[YUAN18_N_FIB]; /* Σ_j (m_j/ρ_j) v_rad_j W: SPH v_rad at each Fibonacci point [physical] */
+    MyFloat debug_vrad_sum;  /* sum of yuan18_vrad_p[p] over inward Fibonacci points (debug) */
+    MyFloat debug_rho_sum;   /* sum of yuan18_rho_p[p]  over inward Fibonacci points (debug) */
+    MyFloat debug_n_inward;  /* count of Fibonacci points with yuan18_vrad_p[p] < 0 */
 }
 *DATARESULT_NAME, *DATAOUT_NAME;
 
 static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
 {
     int target = P[i].IndexMapToTempStruc, p;
-    for(p = 0; p < YUAN18_N_FIB; p++) {ASSIGN_ADD(BlackholeTempInfo[target].Mass_Influx_p[p], out->Mass_Influx_p[p], mode);}
+    for(p = 0; p < YUAN18_N_FIB; p++) {
+        ASSIGN_ADD(BlackholeTempInfo[target].yuan18_rho_p[p],  out->yuan18_rho_p[p],  mode);
+        ASSIGN_ADD(BlackholeTempInfo[target].yuan18_vrad_p[p], out->yuan18_vrad_p[p], mode);
+    }
+    ASSIGN_ADD(BlackholeTempInfo[target].debug_vrad_sum, out->debug_vrad_sum, mode);
+    ASSIGN_ADD(BlackholeTempInfo[target].debug_rho_sum,  out->debug_rho_sum,  mode);
+    ASSIGN_ADD(BlackholeTempInfo[target].debug_n_inward, out->debug_n_inward, mode);
 }
 
 int blackhole_mass_flux_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
@@ -666,7 +676,6 @@ int blackhole_mass_flux_evaluate(int target, int mode, int *exportflag, int *exp
     if(local.R_flux_phys <= 0) return 0; /* weighted Bondi radius unavailable; skip this BH */
 
     int N_fib = YUAN18_N_FIB;
-    double dA_phys = 4.0 * M_PI * local.R_flux_phys * local.R_flux_phys / N_fib;
     double phi_golden = M_PI * (3.0 - sqrt(5.0));
 
     /* Pre-compute unit vectors for the Fibonacci points on the Bondi sphere */
@@ -680,10 +689,10 @@ int blackhole_mass_flux_evaluate(int target, int mode, int *exportflag, int *exp
         n_fib[p][2] = sin(th) * rc;
     }
 
-    /* SPH density and radial-momentum-density numerator at each Fibonacci sphere point.
-     * rho_p[p]      = sum_j m_j * W(|r_p - r_j|, h_j)
-     * vrad_num_p[p] = sum_j m_j * v_rad_j * W(|r_p - r_j|, h_j)
-     * => v_rad(r_p) = vrad_num_p[p] / rho_p[p]                    */
+    /* SPH estimates at each Fibonacci sphere point (kernel h = h_j of each neighbor):
+     * rho_p[p]      = Σ_j m_j W(|r_p - r_j|, h_j)                       [physical density]
+     * vrad_num_p[p] = Σ_j (m_j/ρ_j) v_rad_j W(|r_p - r_j|, h_j)        [physical velocity]
+     * => v_rad(r_p) = vrad_num_p[p]   (standard SPH interpolant; NOT divided by rho) */
     double rho_p[YUAN18_N_FIB], vrad_num_p[YUAN18_N_FIB];
     memset(rho_p,      0, sizeof(rho_p));
     memset(vrad_num_p, 0, sizeof(vrad_num_p));
@@ -712,6 +721,14 @@ int blackhole_mass_flux_evaluate(int target, int mode, int *exportflag, int *exp
 
                 double h_j_phys = PPP[j].Hsml * All.cf_atime;
                 double hinv = 1.0 / h_j_phys, hinv3 = hinv*hinv*hinv, hinv4 = hinv*hinv3;
+                double rho_j_phys = SphP[j].Density * All.cf_a3inv;
+                double mj_over_rho_j = (rho_j_phys > 0) ? P[j].Mass / rho_j_phys : 0.0;
+
+                /* Bounding-sphere cull: skip particle j entirely if its kernel sphere
+                 * (radius h_j, centred at r_j) cannot reach the Bondi sphere surface.
+                 * Min distance from r_j to any point on sphere = ||r_j| - R_bondi|. */
+                double r_j_mag = sqrt(r_j_phys[0]*r_j_phys[0] + r_j_phys[1]*r_j_phys[1] + r_j_phys[2]*r_j_phys[2]);
+                if(fabs(r_j_mag - local.R_flux_phys) >= h_j_phys) {continue;}
 
                 for(int p = 0; p < N_fib; p++) {
                     double dr[3];
@@ -723,19 +740,25 @@ int blackhole_mass_flux_evaluate(int target, int mode, int *exportflag, int *exp
                     kernel_main(sqrt(dist2) * hinv, hinv3, hinv4, &wk, &dwk, -1);
 
                     rho_p[p]      += P[j].Mass * wk;
-                    vrad_num_p[p] += P[j].Mass * (dv_phys[0]*n_fib[p][0] + dv_phys[1]*n_fib[p][1] + dv_phys[2]*n_fib[p][2]) * wk;
+                    vrad_num_p[p] += mj_over_rho_j * (dv_phys[0]*n_fib[p][0] + dv_phys[1]*n_fib[p][1] + dv_phys[2]*n_fib[p][2]) * wk;
                 }
             }
         }
         if(mode == 1) {listindex++; if(listindex < NODELISTLENGTH) {startnode = DATAGET_NAME[target].NodeList[listindex]; if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}}}
     }
 
-    /* Compute signed mass flux rho*v_rad*dA at each sphere point and store in out.
-     * Sign check deferred to set_blackhole_mdot AFTER full MPI accumulation. */
+    /* Store rho_p and vrad_p (= Σ_j m_j/ρ_j * v_rad_j * W) per Fibonacci point.
+     * The product rho_p * vrad_p is NOT MPI-additive, so both arrays are accumulated
+     * separately; set_blackhole_mdot computes mass flux = rho_p * vrad_p * dA after
+     * full MPI reduction.  Also fill debug sums over inward points. */
     for(int p = 0; p < N_fib; p++) {
-        if(rho_p[p] <= 0) {continue;}
-        double v_rad = vrad_num_p[p] / rho_p[p];
-        out.Mass_Influx_p[p] = rho_p[p] * v_rad * dA_phys;
+        out.yuan18_rho_p[p]  = (MyFloat) rho_p[p];
+        out.yuan18_vrad_p[p] = (MyFloat) vrad_num_p[p];
+        if(vrad_num_p[p] < 0) { /* inward Fibonacci point */
+            out.debug_vrad_sum  += vrad_num_p[p];
+            out.debug_rho_sum   += rho_p[p];
+            out.debug_n_inward  += 1.0f;
+        }
     }
 
     if(mode == 0) {OUTPUTFUNCTION_NAME(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;}

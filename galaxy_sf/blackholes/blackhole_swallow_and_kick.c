@@ -1247,6 +1247,7 @@ struct INPUT_STRUCT_NAME
 {
     int NodeList[NODELISTLENGTH]; MyDouble Pos[3]; MyFloat Vel[3];
     MyFloat R_bondi_phys;
+    MyFloat r_inject_phys;
     MyFloat Jdir[3];
     int mode_wind;
 }
@@ -1256,7 +1257,8 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
 {
     int k, j_ti = P[i].IndexMapToTempStruc;
     for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k]; in->Vel[k]=P[i].Vel[k];}
-    in->R_bondi_phys = BlackholeTempInfo[j_ti].Bondi_Radius_Weighted;
+    in->R_bondi_phys  = BlackholeTempInfo[j_ti].Bondi_Radius_Weighted;
+    in->r_inject_phys = BlackholeTempInfo[j_ti].Yuan18_r_inject;
     in->mode_wind = BlackholeTempInfo[j_ti].Yuan18_mode_wind;
     double jmag2 = 0;
     for(k=0;k<3;k++) {jmag2 += BlackholeTempInfo[j_ti].Jgas_in_Kernel[k] * BlackholeTempInfo[j_ti].Jgas_in_Kernel[k];}

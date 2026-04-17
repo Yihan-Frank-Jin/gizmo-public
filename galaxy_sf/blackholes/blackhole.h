@@ -86,7 +86,11 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
     MyFloat BondiRadius_WeightedSum;
     MyFloat Bondi_WeightSum;
     MyFloat Bondi_Radius_Weighted;
-    MyFloat Mass_Influx_p[YUAN18_N_FIB]; /* signed rho*v_rad*dA at each Fibonacci point; MPI-additive */
+    MyFloat yuan18_rho_p[YUAN18_N_FIB];   /* Σ_j m_j W(r_p-r_j,h_j): SPH density at each Fibonacci point [physical] */
+    MyFloat yuan18_vrad_p[YUAN18_N_FIB];  /* Σ_j (m_j/ρ_j) v_rad_j W(r_p-r_j,h_j): SPH v_rad at each Fibonacci point [physical] */
+    MyFloat debug_vrad_sum;  /* sum of yuan18_vrad_p[p] over inward Fibonacci points (debug) */
+    MyFloat debug_rho_sum;   /* sum of yuan18_rho_p[p] over inward Fibonacci points (debug) */
+    MyFloat debug_n_inward;  /* count of Fibonacci points with yuan18_vrad_p[p] < 0 */
     MyFloat Yuan18_v_wind;
     MyFloat Yuan18_eps_wind;
     MyFloat Yuan18_f_accreted;           /* mdot_bh / mdot_bondi; used by BH_WIND_KICK path */
@@ -94,6 +98,7 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
     int     Yuan18_mode_wind;            /* matches yuan18.cpp OutflowMode: 0=NONE, 1=HOT, 2=SUB, 3=SUP, 4=JET */
     MyFloat Yuan18_angle_weighted_sum;   /* normalization sum over eligible wind-injection neighbors */
     MyFloat Yuan18_L_rad;                /* eps_rad * mdot_bh * c^2 [code energy/time] */
+    MyFloat Yuan18_r_inject;            /* injection surface (physical): r_tr (hot) or R_bondi (cold/super) */
 #endif
 }
 *BlackholeTempInfo;
@@ -124,6 +129,7 @@ void blackhole_mass_flux_loop(void);
 #ifdef BH_YUAN18_WIND
 void blackhole_yuan18_wind_angle_norm_loop(void);   /* angular-weight normalization sum over neighbors */
 void blackhole_yuan18_wind_inject_loop(void);        /* momentum + thermal energy injection into neighbors */
+void blackhole_yuan18_remove_loop(void);             /* excise gas particles within injection sphere */
 #endif
 
 /* blackhole_swallow_and_kick.c */
