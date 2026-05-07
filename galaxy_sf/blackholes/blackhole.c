@@ -65,11 +65,6 @@ void blackhole_accretion(void)
      No MPI comm necessary.
      ----------------------------------------------------------------------*/
     blackhole_properties_loop();       /* do 'BH-centric' operations such as dyn-fric, mdot, etc. This loop is at the end of this file.  */
-#ifdef BH_YUAN18_WIND
-    blackhole_yuan18_wind_angle_norm_loop();   /* sum ang_weight*kernel over eligible neighbors (sets Yuan18_angle_weighted_sum) */
-    blackhole_yuan18_wind_inject_loop();       /* inject mass, momentum, and thermal energy into neighbors */
-    blackhole_yuan18_remove_loop();            /* excise gas particles within the injection sphere */
-#endif
     /*----------------------------------------------------------------------
      Now we perform a second pass over the black hole environment.
      Re-evaluate the decision to stochastically swallow gas if we exceed eddington.
@@ -619,7 +614,7 @@ void set_blackhole_mdot(int i, int n, double dt)
     double mdot_bh = 0, mdot_wind = 0, v_wind = 0, eps_wind = 0;
     double mdot_jet = 0, v_jet = 0, eps_jet = 0;
     int mode_wind = 0; /* NONE; all branches assign this explicitly */
-    double r_inject = 0; /* injection surface radius (physical): r_tr (hot) or R_bondi (cold/super) */
+    double r_inject = 0; /* injection surface radius (physical). Rule: r_inject = max(r_tr_phys, R_bondi) for HOT, R_bondi for SUB/SUP. Continuous across HOT/SUB boundary (both -> R_bondi); deviates upward only in deep-HOT where r_tr_phys can exceed R_bondi. */
 
     if (mdot_bondi > mdot_crit) // cold mode
     {
@@ -648,14 +643,17 @@ void set_blackhole_mdot(int i, int n, double dt)
     else if (mdot_bondi > MIN_REAL_NUMBER) // hot mode
     {
         double r_s = 2 * All.G * BPP(n).BH_Mass / (C_LIGHT_CODE * C_LIGHT_CODE);
-        double r_tr = 3 * r_s * (0.02 * mdot_edd_yuan18 / mdot_bondi) * (0.02 * mdot_edd_yuan18 / mdot_bondi);
+        double r_tr_physical = 3 * r_s * (0.02 * mdot_edd_yuan18 / mdot_bondi) * (0.02 * mdot_edd_yuan18 / mdot_bondi);
                 
-        r_tr = DMIN(r_tr, x1min);  
-        r_tr = DMAX(r_tr, 3 * r_s);
-        
+        r_tr_physical = DMAX(r_tr_physical, 3 * r_s); /* true Yuan18 truncation radius used for wind launching */
+        double r_tr_mdot = DMIN(r_tr_physical, x1min); /* effective radius for extrapolating mdot_bh from the measured inflow at R_bondi */
+        r_tr_mdot = DMAX(r_tr_mdot, 3 * r_s);
+
+        r_inject = DMAX(r_tr_physical, x1min); /* launch radius: physical r_tr if outside R_bondi, else R_bondi */
+
         double mdot_r_tr_is_r_in = 0.02 * sqrt(3. * r_s / x1min) * mdot_edd_yuan18;
 
-        if (mdot_bondi > mdot_r_tr_is_r_in) // hot mode with r_tr > r_in 
+        if (mdot_bondi > mdot_r_tr_is_r_in) // hot mode with r_tr_mdot < R_bondi (small r_tr, high mdot)
         {
             double x2 = log10(mdot_crit / mdot_edd_yuan18);
             double x1 = log10(mdot_r_tr_is_r_in / mdot_edd_yuan18); /* lower boundary of fitting range, not current mdot_bondi */
@@ -667,19 +665,19 @@ void set_blackhole_mdot(int i, int n, double dt)
             mdot_bh = pow(10, a * log_mdot_bondi_edd * log_mdot_bondi_edd * log_mdot_bondi_edd + b * log_mdot_bondi_edd * log_mdot_bondi_edd + c * log_mdot_bondi_edd + d) * mdot_edd_yuan18;
             mdot_wind = DMAX(mdot_bondi - mdot_bh, 0.0);
         }
-        else // hot mode with r_tr <= r_in
+        else // hot mode with r_tr_physical >= R_bondi (large r_tr, low mdot); mdot is matched at R_bondi
         {
-            mdot_bh = mdot_bondi * sqrt(3. * r_s / r_tr);
+            mdot_bh = mdot_bondi * sqrt(3. * r_s / r_tr_mdot);
             mdot_wind = mdot_bondi - mdot_bh;
         }
 
         double gamma_gas = 5.0 / 3.0;
         double gamma_wind = 4.0 / 3.0; /* ADAF wind adiabatic index (radiation/relativistic), distinct from gamma_gas; yuan18.cpp static Real gamma_wind = 4.0/3 */
-        v_wind = 0.2 * sqrt(All.G * BPP(n).BH_Mass / r_tr);
-        eps_wind = 0.5 / ((gamma_gas - 1.0) * gamma_gas) * All.G * BPP(n).BH_Mass / (3. * r_tr) * pow(x1min / r_tr, -2.0 * (gamma_wind - 1.0));
-       
+        v_wind = 0.2 * sqrt(All.G * BPP(n).BH_Mass / r_tr_physical);
+        /* adiabatic-decompression factor from the physical wind-launch radius to the injection surface */
+        eps_wind = 0.5 / ((gamma_gas - 1.0) * gamma_gas) * All.G * BPP(n).BH_Mass / (3. * r_tr_physical) * pow(r_inject / r_tr_physical, -2.0 * (gamma_wind - 1.0));
+
         mode_wind = 1; // HOT (matching yuan18.cpp OutflowMode enum)
-        r_inject = r_tr; /* hot mode: injection surface is the ADAF truncation radius */
 
         // TODO: not sure about the jet
         mdot_jet = 0.5 * mdot_bh;
@@ -701,6 +699,41 @@ void set_blackhole_mdot(int i, int n, double dt)
     BlackholeTempInfo[i].Yuan18_mdot_wind  = DMAX(mdot_wind, 0.0);
     BlackholeTempInfo[i].Yuan18_mode_wind  = mode_wind;
     BlackholeTempInfo[i].Yuan18_r_inject   = r_inject;
+#ifdef BH_YUAN18_WIND
+    /* persist wind quantities to the BH particle so blackhole_spawn_particle_wind_shell can read them by P-index (BlackholeTempInfo is keyed by active-BH ordering, not P-index) */
+    BPP(n).Yuan18_BH_v_wind    = v_wind;
+    BPP(n).Yuan18_BH_eps_wind  = eps_wind;
+    BPP(n).Yuan18_BH_r_inject  = r_inject;
+    BPP(n).Yuan18_BH_mode_wind = mode_wind;
+    /* normalized Yuan18 wind axis: fixed z-axis for debug, otherwise prefer the persistent BH/accretion-disk
+       angular-momentum proxy and fall back to the instantaneous gas angular momentum in the BH kernel. */
+#ifdef BH_YUAN18_WIND_FIXED_Z_AXIS
+    BPP(n).Yuan18_BH_J_dir[0] = 0.0;
+    BPP(n).Yuan18_BH_J_dir[1] = 0.0;
+    BPP(n).Yuan18_BH_J_dir[2] = 1.0;
+#else
+    double J_axis[3] = {0.0, 0.0, 0.0}, Jmag2 = 0.0;
+#ifdef BH_FOLLOW_ACCRETED_ANGMOM
+    for(int kk=0; kk<3; kk++) {J_axis[kk] = BPP(n).BH_Specific_AngMom[kk];}
+#endif
+    for(int kk=0; kk<3; kk++) {Jmag2 += J_axis[kk] * J_axis[kk];}
+    if(Jmag2 <= 0)
+    {
+        Jmag2 = 0.0;
+        for(int kk=0; kk<3; kk++) {J_axis[kk] = BlackholeTempInfo[i].Jgas_in_Kernel[kk];}
+        for(int kk=0; kk<3; kk++) {Jmag2 += J_axis[kk] * J_axis[kk];}
+    }
+    if(Jmag2 > 0)
+    {
+        double inv_Jmag = 1.0 / sqrt(Jmag2);
+        for(int kk=0; kk<3; kk++) {BPP(n).Yuan18_BH_J_dir[kk] = J_axis[kk] * inv_Jmag;}
+    }
+    else
+    {
+        for(int kk=0; kk<3; kk++) {BPP(n).Yuan18_BH_J_dir[kk] = 0.0;}
+    }
+#endif
+#endif
     double mdot_norm = (mdot_edd_yuan18 > 0) ? mdot_bh / mdot_edd_yuan18 : 0.0;
     BlackholeTempInfo[i].Yuan18_L_rad = GetRadEfficiency(mdot_norm) * mdot_bh * C_LIGHT_CODE * C_LIGHT_CODE;
 
@@ -756,6 +789,14 @@ void set_blackhole_new_mass(int i, int n, double dt)
     BPP(n).BH_AccretionDeficit += dMBH_continuous_accretion; // this is mass continuously accreted, which needs to be stochastically 'caught up to'
 #endif
 
+#ifdef BH_YUAN18_WIND
+    /* Yuan18 solves mdot_bh and mdot_wind separately. BH_Mass has already grown by mdot_bh*dt above;
+       add the wind portion only to the stochastic gas-swallow deficit so gas around the BH loses the full
+       mdot_bondi*dt = (mdot_bh + mdot_wind)*dt represented by the inflow. */
+#if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
+    BPP(n).BH_AccretionDeficit += BlackholeTempInfo[i].Yuan18_mdot_wind * dt;
+#endif
+#endif
 
 #ifdef BH_YUAN18_ACCRETION
     double tau_ff = 0.5 * M_PI * sqrt(pow(BlackholeTempInfo[i].Bondi_Radius_Weighted, 3.0) / (2. * All.G * BPP(n).BH_Mass)); // in yuan18.cpp, tau_ff should be determined by both tau_ff_bh and tau_ff_gal, whenStellarFeedbackFlag is defined. For simplicity, stellar feedback is not included yet.
@@ -1069,6 +1110,46 @@ void blackhole_final_operations(void)
         double n_unspawned = BPP(n).unspawned_wind_mass / ((BH_WIND_SPAWN)*target_mass_for_wind_spawning(n)); // number of spawned gas cells that can be made from the mass in the reservoir
         if(n_unspawned> Max_Unspawned_MassUnits_fromSink) {Max_Unspawned_MassUnits_fromSink = n_unspawned;} // track the maximum integer number of elements this sink could spawn
 #endif
+#ifdef BH_YUAN18_WIND
+        /* Yuan18 wind reservoir feed. The physical BH mass has already grown only by mdot_bh*dt, so do not
+           subtract wind mass from BPP(n).BH_Mass here. P[n].Mass is not decremented until actual spawned
+           wind cells are created in blackhole_yuan18_spawn_particle_wind_shell. The reservoir accumulates
+           until it contains enough target-mass units for an angularly sampled spawn batch; this is still not
+           MACER3D's wind travel-time buffer. v_wind, eps_wind, r_inject, and J_dir are mass-weighted over the accumulated reservoir;
+           mode_wind currently uses the latest contribution. TODO(Yuan18): split this into per-mode reservoirs
+           so HOT/SUB/SUP material is not mixed when the flow mode changes between spawn events. */
+        double dm_wind_yuan18 = BlackholeTempInfo[i].Yuan18_mdot_wind * dt;
+        if(dm_wind_yuan18 > 0)
+        {
+            double reservoir_mass_old = BPP(n).Yuan18_BH_reservoir_mass;
+            double reservoir_mass_new = reservoir_mass_old + dm_wind_yuan18;
+            double w_old = reservoir_mass_old / reservoir_mass_new;
+            double w_new = dm_wind_yuan18 / reservoir_mass_new;
+            BPP(n).Yuan18_BH_reservoir_v_wind    = w_old * BPP(n).Yuan18_BH_reservoir_v_wind   + w_new * BPP(n).Yuan18_BH_v_wind;
+            BPP(n).Yuan18_BH_reservoir_eps_wind  = w_old * BPP(n).Yuan18_BH_reservoir_eps_wind + w_new * BPP(n).Yuan18_BH_eps_wind;
+            BPP(n).Yuan18_BH_reservoir_r_inject  = w_old * BPP(n).Yuan18_BH_reservoir_r_inject + w_new * BPP(n).Yuan18_BH_r_inject;
+            BPP(n).Yuan18_BH_reservoir_mode_wind = BPP(n).Yuan18_BH_mode_wind;
+            double J_reservoir[3], Jmag2 = 0;
+            for(int kk=0; kk<3; kk++)
+            {
+                J_reservoir[kk] = w_old * BPP(n).Yuan18_BH_reservoir_J_dir[kk] + w_new * BPP(n).Yuan18_BH_J_dir[kk];
+                Jmag2 += J_reservoir[kk] * J_reservoir[kk];
+            }
+            if(Jmag2 > 0)
+            {
+                double inv_Jmag = 1.0 / sqrt(Jmag2);
+                for(int kk=0; kk<3; kk++) {BPP(n).Yuan18_BH_reservoir_J_dir[kk] = J_reservoir[kk] * inv_Jmag;}
+            }
+            else
+            {
+                for(int kk=0; kk<3; kk++) {BPP(n).Yuan18_BH_reservoir_J_dir[kk] = 0;}
+            }
+            BPP(n).Yuan18_BH_reservoir_mass = reservoir_mass_new;
+        }
+        double target_wind_mass = target_mass_for_wind_spawning(n);
+        double n_reservoir_yuan18 = (target_wind_mass > 0) ? (BPP(n).Yuan18_BH_reservoir_mass / target_wind_mass) : (BPP(n).Yuan18_BH_reservoir_mass > 0);
+        if(n_reservoir_yuan18 > Max_Yuan18_WindReservoirMassUnits_fromSink) {Max_Yuan18_WindReservoirMassUnits_fromSink = n_reservoir_yuan18;}
+#endif
 
 #ifdef RT_BH_ANGLEWEIGHT_PHOTON_INJECTION
         P[n].KernelSum_Around_RT_Source = BlackholeTempInfo[i].BH_angle_weighted_kernel_sum;
@@ -1091,11 +1172,10 @@ void blackhole_final_operations(void)
          *               Mgas Mstar MgasBulge MstarBulge r0 Pos[3] Vel[3] Jgas[3] Jstar[3] Bondi_R_Weighted
          * Column 29 (BH_YUAN18_ACCRETION only): Yuan18_BH_Mdot_Bondi  */
 #ifdef BH_YUAN18_ACCRETION
-        fprintf(FdBlackHolesDetails, "%.16g %llu  %g %g %g %g %g %g  %g %g %g %g %g %g %g %g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %g %g %g  %g %g %g %g %g  %g %g %g\n",
+        fprintf(FdBlackHolesDetails, "%.16g %llu  %g %g %g %g %g %g  %g %g %g %g %g %g %g %g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %g %g %g  %g %g %g %g %g \n",
                 All.Time, (unsigned long long)P[n].ID,  P[n].Mass, BPP(n).BH_Mass, mass_disk, BPP(n).BH_Mdot, mdot_disk, dt, BPP(n).DensAroundStar*All.cf_a3inv, BlackholeTempInfo[i].BH_InternalEnergy, BlackholeTempInfo[i].Sfr_in_Kernel,
                 BlackholeTempInfo[i].Mgas_in_Kernel, BlackholeTempInfo[i].Mstar_in_Kernel, MgasBulge, MstarBulge, r0, P[n].Pos[0], P[n].Pos[1], P[n].Pos[2],  P[n].Vel[0], P[n].Vel[1], P[n].Vel[2],
-                BlackholeTempInfo[i].Jgas_in_Kernel[0], BlackholeTempInfo[i].Jgas_in_Kernel[1], BlackholeTempInfo[i].Jgas_in_Kernel[2], BlackholeTempInfo[i].Jstar_in_Kernel[0], BlackholeTempInfo[i].Jstar_in_Kernel[1], BlackholeTempInfo[i].Jstar_in_Kernel[2], BlackholeTempInfo[i].Bondi_Radius_Weighted, BPP(n).Yuan18_BH_Mdot_Bondi,
-                BlackholeTempInfo[i].debug_n_inward, BlackholeTempInfo[i].debug_rho_sum, BlackholeTempInfo[i].debug_vrad_sum); fflush(FdBlackHolesDetails);
+                BlackholeTempInfo[i].Jgas_in_Kernel[0], BlackholeTempInfo[i].Jgas_in_Kernel[1], BlackholeTempInfo[i].Jgas_in_Kernel[2], BlackholeTempInfo[i].Jstar_in_Kernel[0], BlackholeTempInfo[i].Jstar_in_Kernel[1], BlackholeTempInfo[i].Jstar_in_Kernel[2], BlackholeTempInfo[i].Bondi_Radius_Weighted, BPP(n).Yuan18_BH_Mdot_Bondi); fflush(FdBlackHolesDetails);
 #else
         fprintf(FdBlackHolesDetails, "%.16g %llu  %g %g %g %g %g %g  %g %g %g %g %g %g %g %g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %g %g %g  %g %g %g\n",
                 All.Time, (unsigned long long)P[n].ID,  P[n].Mass, BPP(n).BH_Mass, mass_disk, BPP(n).BH_Mdot, mdot_disk, dt, BPP(n).DensAroundStar*All.cf_a3inv, BlackholeTempInfo[i].BH_InternalEnergy, BlackholeTempInfo[i].Sfr_in_Kernel,

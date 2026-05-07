@@ -168,6 +168,9 @@ int N_stars;
 #ifdef BH_WIND_SPAWN
 double  Max_Unspawned_MassUnits_fromSink;
 #endif
+#ifdef BH_YUAN18_WIND
+double  Max_Yuan18_WindReservoirMassUnits_fromSink;
+#endif
 
 long long Ntype[6];		/*!< total number of particles of each type */
 int NtypeLocal[6];		/*!< local number of particles of each type */

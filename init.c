@@ -491,6 +491,19 @@ void init(void)
                 BPP(i).Yuan18_BH_Mass_disk    = 0;
                 BPP(i).Yuan18_BH_Mdot_Bondi   = 0;
 #endif
+#ifdef BH_YUAN18_WIND
+                BPP(i).Yuan18_BH_reservoir_mass = 0;
+                BPP(i).Yuan18_BH_v_wind    = 0;
+                BPP(i).Yuan18_BH_eps_wind  = 0;
+                BPP(i).Yuan18_BH_r_inject  = 0;
+                BPP(i).Yuan18_BH_mode_wind = 0;
+                BPP(i).Yuan18_BH_J_dir[0] = 0; BPP(i).Yuan18_BH_J_dir[1] = 0; BPP(i).Yuan18_BH_J_dir[2] = 0;
+                BPP(i).Yuan18_BH_reservoir_v_wind    = 0;
+                BPP(i).Yuan18_BH_reservoir_eps_wind  = 0;
+                BPP(i).Yuan18_BH_reservoir_r_inject  = 0;
+                BPP(i).Yuan18_BH_reservoir_mode_wind = 0;
+                BPP(i).Yuan18_BH_reservoir_J_dir[0] = 0; BPP(i).Yuan18_BH_reservoir_J_dir[1] = 0; BPP(i).Yuan18_BH_reservoir_J_dir[2] = 0;
+#endif
             }
 #ifdef BH_INTERACT_ON_GAS_TIMESTEP
             P[i].dt_since_last_gas_search = 0;
@@ -727,6 +740,9 @@ void init(void)
 
 #ifdef BH_WIND_SPAWN
     Max_Unspawned_MassUnits_fromSink = 0;
+#endif
+#ifdef BH_YUAN18_WIND
+    Max_Yuan18_WindReservoirMassUnits_fromSink = 0;
 #endif
 
 #ifdef SHIFT_BY_HALF_BOX

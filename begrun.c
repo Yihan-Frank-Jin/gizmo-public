@@ -355,6 +355,9 @@ void begrun(void)
         All.BAL_internal_temperature = all.BAL_internal_temperature;
         All.BAL_wind_particle_mass = all.BAL_wind_particle_mass; // dangeous to change this, as it is also part of the merger criterion!
 #endif
+#ifdef BH_YUAN18_WIND
+        All.BAL_wind_particle_mass = all.BAL_wind_particle_mass; // dangeous to change this, as it is also part of the merger criterion!
+#endif
 #ifdef BH_PHOTONMOMENTUM
         All.BH_Rad_MomentumFactor = all.BH_Rad_MomentumFactor;
 #endif
@@ -1497,6 +1500,12 @@ void read_parameter_file(char *fname)
         id[nt++] = REAL;
 #endif
 #endif
+#ifdef BH_YUAN18_WIND
+        strcpy(tag[nt], "BAL_wind_particle_mass");
+        strcpy(alternate_tag[nt], "Cell_Spawn_Mass_ratio");
+        addr[nt] = &All.BAL_wind_particle_mass;
+        id[nt++] = REAL;
+#endif
 
 #ifdef BH_PHOTONMOMENTUM
         strcpy(tag[nt],"BH_FluxMomentumFactor");
@@ -2414,6 +2423,9 @@ void read_parameter_file(char *fname)
 #endif // closes DEVELOPER_MODE check //
 #ifdef BH_WIND_SPAWN
     All.AGNWindID = 1913298393;       // this seems weird, but is the bitshifted version of 1234568912345 for not long IDs.
+#endif
+#ifdef BH_YUAN18_WIND
+    All.AGNWindID = 1913298393;       // matches BH_WIND_SPAWN; tags spawned Yuan18 wind particles with a unique sentinel ID
 #endif
 
 #ifdef GALSF

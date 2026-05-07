@@ -96,7 +96,6 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
     MyFloat Yuan18_f_accreted;           /* mdot_bh / mdot_bondi; used by BH_WIND_KICK path */
     MyFloat Yuan18_mdot_wind;            /* mdot_bondi - mdot_bh (>= 0) */
     int     Yuan18_mode_wind;            /* matches yuan18.cpp OutflowMode: 0=NONE, 1=HOT, 2=SUB, 3=SUP, 4=JET */
-    MyFloat Yuan18_angle_weighted_sum;   /* normalization sum over eligible wind-injection neighbors */
     MyFloat Yuan18_L_rad;                /* eps_rad * mdot_bh * c^2 [code energy/time] */
     MyFloat Yuan18_r_inject;            /* injection surface (physical): r_tr (hot) or R_bondi (cold/super) */
 #endif
@@ -126,15 +125,21 @@ void blackhole_environment_second_loop(void);
 void blackhole_bondi_radius_loop(void); /* dedicated wide-search loop for weighted Bondi radius */
 void blackhole_mass_flux_loop(void);
 #endif
-#ifdef BH_YUAN18_WIND
-void blackhole_yuan18_wind_angle_norm_loop(void);   /* angular-weight normalization sum over neighbors */
-void blackhole_yuan18_wind_inject_loop(void);        /* momentum + thermal energy injection into neighbors */
-void blackhole_yuan18_remove_loop(void);             /* excise gas particles within injection sphere */
-#endif
-
 /* blackhole_swallow_and_kick.c */
 void blackhole_swallow_and_kick_loop(void);
 double target_mass_for_wind_spawning(int i);
+#ifdef BH_YUAN18_WIND
+/* Yuan18 angular cone constants -- match yuan18.cpp InnerX1() defaults */
+#define YUAN18_COS_ANG1_HOT 0.8660  /* cos(30 deg): outer (largest |cos theta|) bound of HOT biconical shell */
+#define YUAN18_COS_ANG2_HOT 0.3420  /* cos(70 deg): inner (smallest |cos theta|) bound of HOT biconical shell */
+#define YUAN18_COS_ANG_SUP  0.8660  /* cos(30 deg): inner (smallest |cos theta|) bound of SUP polar caps */
+#define YUAN18_WIND_N_MIN   32      /* minimum target-mass units accumulated before a Yuan18 wind spawn batch; keeps batches large enough to sample the angular distribution */
+void get_wind_spawn_direction_yuan18(int i, int num_spawned_this_call, int mode_wind,
+                                     double *ny, double *nz,
+                                     double *veldir, double *dpdir);
+int spawn_bh_yuan18_wind_feedback(double *mass_spawned_out);
+int  blackhole_yuan18_spawn_particle_wind_shell(int i, int dummy_cell_i_to_clone, int num_already_spawned);
+#endif
 
 /* blackhole_feed.c */
 void blackhole_feed_loop(void);

@@ -272,6 +272,31 @@ void calculate_non_standard_physics(void)
         }}
 #endif
 #endif
+
+#ifdef BH_YUAN18_WIND  /* parallel to BH_WIND_SPAWN; mutually exclusive (#error guard in allvars.h). Yuan18 wind dispatcher uses its own reservoir/threshold globals so this block compiles independently when BH_WIND_SPAWN is undefined. */
+        double Max_Yuan18_WindReservoirMassUnits_fromSink_global;
+        MPI_Allreduce(&Max_Yuan18_WindReservoirMassUnits_fromSink, &Max_Yuan18_WindReservoirMassUnits_fromSink_global, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        double yuan18_wind_max_reservoir_particles = Max_Yuan18_WindReservoirMassUnits_fromSink_global;
+        double yuan18_wind_mass_in_reservoir = yuan18_wind_max_reservoir_particles * All.BAL_wind_particle_mass;
+        double yuan18_wind_mass_threshold = YUAN18_WIND_N_MIN * All.BAL_wind_particle_mass;
+        int yuan18_wind_particles_spawned = 0;
+        double yuan18_wind_mass_spawned = 0;
+        if(Max_Yuan18_WindReservoirMassUnits_fromSink_global >= YUAN18_WIND_N_MIN)
+        {
+            yuan18_wind_particles_spawned = spawn_bh_yuan18_wind_feedback(&yuan18_wind_mass_spawned);
+            if(yuan18_wind_particles_spawned > 0)
+            {
+                rearrange_particle_sequence();
+            }
+            Max_Yuan18_WindReservoirMassUnits_fromSink = Max_Yuan18_WindReservoirMassUnits_fromSink_global = 0.;
+        }
+        if((ThisTask == 0) && (yuan18_wind_particles_spawned > 0))
+        {
+            printf("[Yuan18-wind] spawned_particles=%d spawned_mass=%g, mass_in_reservoir=%g, mass_threshold=%g\n",
+                   yuan18_wind_particles_spawned, yuan18_wind_mass_spawned, yuan18_wind_mass_in_reservoir, yuan18_wind_mass_threshold);
+            fflush(stdout);
+        }
+#endif
         MPI_Barrier(MPI_COMM_WORLD); CPU_Step[CPU_BLACKHOLES] += measure_time();
     }
 #endif
