@@ -1913,7 +1913,7 @@ extern FILE *FdBhFormationDetails;
 extern FILE *FdBlackHolesDetails;
 #ifdef BH_OUTPUT_MOREINFO
 extern FILE *FdBhMergerDetails;
-#ifdef BH_WIND_KICK
+#if defined(BH_WIND_KICK) || defined(BH_YUAN18_WIND)
 extern FILE *FdBhWindDetails;
 #endif
 #endif
@@ -2754,15 +2754,14 @@ extern ALIGN(32) struct particle_data
 #ifdef BH_YUAN18_WIND
     MyFloat Yuan18_BH_v_wind;             /* current wind launch speed [physical code units]; persisted from BlackholeTempInfo in set_blackhole_mdot */
     MyFloat Yuan18_BH_eps_wind;           /* current wind specific internal energy [code units] */
-    MyFloat Yuan18_BH_r_inject;           /* current wind launch radius [physical code units] = max(r_tr, R_bondi) */
+    MyFloat Yuan18_BH_r_inject;           /* current wind launch radius [physical code units]: r_tr in HOT mode, R_bondi in SUB/SUP modes */
     int     Yuan18_BH_mode_wind;          /* current OutflowMode: 0=NONE, 1=HOT, 2=SUB, 3=SUP (matches yuan18.cpp) */
-    MyFloat Yuan18_BH_J_dir[3];           /* normalized current Yuan18 wind axis: fixed z-axis in debug builds, otherwise BH_Specific_AngMom if tracked, falling back to Jgas_in_Kernel. Zero vector means sampler falls back to z-axis */
+    MyFloat Yuan18_BH_J_dir[3];           /* normalized current Yuan18 wind axis: fixed z-axis in debug builds, otherwise BH_Specific_AngMom only. Zero vector means sampler falls back to z-axis */
     MyFloat Yuan18_BH_reservoir_mass;     /* accumulated Yuan18 wind mass queued for the next spawn batch [code mass] */
     MyFloat Yuan18_BH_reservoir_v_wind;   /* mass-weighted launch speed for the accumulated wind reservoir [physical code units] */
     MyFloat Yuan18_BH_reservoir_eps_wind; /* mass-weighted specific internal energy for the accumulated wind reservoir [code units] */
-    MyFloat Yuan18_BH_reservoir_r_inject; /* mass-weighted launch radius for the accumulated wind reservoir [physical code units] */
     int     Yuan18_BH_reservoir_mode_wind;/* OutflowMode for the accumulated wind reservoir; latest contribution wins if modes change */
-    MyFloat Yuan18_BH_reservoir_J_dir[3]; /* mass-weighted spin axis for the accumulated wind reservoir; normalized before spawning */
+    MyFloat Yuan18_BH_reservoir_J_dir[3]; /* diagnostic copy of the latest Yuan18_BH_J_dir contributing to the reservoir; not used as the launch axis */
 #endif
 #endif  /* if defined(BLACK_HOLES) */
 #ifdef BH_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA

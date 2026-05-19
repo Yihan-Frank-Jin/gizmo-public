@@ -395,8 +395,41 @@ void blackhole_environment_loop(void)
 #ifdef BH_YUAN18_ACCRETION
 
 #define CORE_FUNCTION_NAME blackhole_bondi_radius_evaluate
-#define CONDITIONFUNCTION_FOR_EVALUATION if(bhsink_isactive(i))
+#define CONDITIONFUNCTION_FOR_EVALUATION if(bhsink_isactive(i) && !BlackholeTempInfo[P[i].IndexMapToTempStruc].Yuan18_Bondi_Search_Done)
 #include "../../system/code_block_xchange_initialize.h"
+
+static inline double blackhole_yuan18_bondi_search_cap_phys(void)
+{
+    double lx = All.BoxSize, ly = All.BoxSize, lz = All.BoxSize;
+#ifdef BOX_LONG_X
+    lx *= BOX_LONG_X;
+#endif
+#ifdef BOX_LONG_Y
+    ly *= BOX_LONG_Y;
+#endif
+#ifdef BOX_LONG_Z
+    lz *= BOX_LONG_Z;
+#endif
+    if(lx <= 0 || ly <= 0 || lz <= 0) {return MAX_REAL_NUMBER;}
+    return 0.5 * sqrt(lx*lx + ly*ly + lz*lz) * All.cf_atime;
+}
+
+static inline double blackhole_yuan18_initial_bondi_search_radius_phys(int i)
+{
+    int j_ti = P[i].IndexMapToTempStruc;
+    double R_prev_phys = BPP(i).Yuan18_BH_Bondi_Radius;
+    double R_search_phys;
+    if(R_prev_phys > 0)
+    {
+        R_search_phys = 2.0 * R_prev_phys;
+    } else {
+        double u_mean = BlackholeTempInfo[j_ti].BH_InternalEnergy;
+        double R_bondi_textbook = (u_mean > 0) ? All.G * BPP(i).BH_Mass / u_mean
+                                               : PPP[i].Hsml * All.cf_atime;
+        R_search_phys = 2.0 * R_bondi_textbook;
+    }
+    return DMAX(R_search_phys, PPP[i].Hsml * All.cf_atime);
+}
 
 struct INPUT_STRUCT_NAME
 {
@@ -412,25 +445,7 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
     int k, j_ti = P[i].IndexMapToTempStruc;
     for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k]; in->Vel[k]=P[i].Vel[k];}
     in->BH_Mass = BPP(i).BH_Mass;
-
-    double R_search_phys;
-    double R_prev_phys = BPP(i).Yuan18_BH_Bondi_Radius;
-    if (R_prev_phys > 0) {
-        /* Normal case: search 2x the Bondi radius measured last timestep. */
-        R_search_phys = 2.0 * R_prev_phys;
-    } else {
-        /* First timestep: no prior Bondi radius available.
-         * Fall back to textbook formula: R_bondi = G*M_BH / u_mean. */
-        double u_mean = BlackholeTempInfo[j_ti].BH_InternalEnergy;
-        double R_bondi_textbook = (u_mean > 0) ? All.G * in->BH_Mass / u_mean
-                                               : PPP[i].Hsml * All.cf_atime;
-        R_search_phys = 2.0 * R_bondi_textbook;
-    }
-
-    /* Absolute floor: always search at least one kernel radius. */
-    R_search_phys = DMAX(R_search_phys, PPP[i].Hsml * All.cf_atime);
-
-    in->R_search_code = (MyFloat)(R_search_phys / All.cf_atime);  /* comoving code units */
+    in->R_search_code = (MyFloat)(BlackholeTempInfo[j_ti].Yuan18_Bondi_Search_Radius / All.cf_atime);
 }
  
 struct OUTPUT_STRUCT_NAME
@@ -520,8 +535,39 @@ int blackhole_bondi_radius_evaluate(int target, int mode, int *exportflag, int *
  
 void blackhole_bondi_radius_loop(void)
 {
+    int i, need_more_local, need_more_global;
+    double R_cap_phys = blackhole_yuan18_bondi_search_cap_phys();
+    for(i = 0; i < N_active_loc_BHs; i++)
+    {
+        int n = BlackholeTempInfo[i].index;
+        double R_search_phys = DMIN(blackhole_yuan18_initial_bondi_search_radius_phys(n), R_cap_phys);
+        BlackholeTempInfo[i].Yuan18_Bondi_Search_Radius = R_search_phys;
+        BlackholeTempInfo[i].Yuan18_Bondi_Search_Done = (R_search_phys <= 0);
+        BlackholeTempInfo[i].BondiRadius_WeightedSum = 0;
+        BlackholeTempInfo[i].Bondi_WeightSum = 0;
+    }
+
 #include "../../system/code_block_xchange_perform_ops_malloc.h"
+    do
+    {
+        need_more_local = 0;
 #include "../../system/code_block_xchange_perform_ops.h"
+        for(i = 0; i < N_active_loc_BHs; i++)
+        {
+            if(BlackholeTempInfo[i].Yuan18_Bondi_Search_Done) {continue;}
+            if(BlackholeTempInfo[i].Bondi_WeightSum > 0 || BlackholeTempInfo[i].Yuan18_Bondi_Search_Radius >= R_cap_phys)
+            {
+                BlackholeTempInfo[i].Yuan18_Bondi_Search_Done = 1;
+            } else {
+                BlackholeTempInfo[i].Yuan18_Bondi_Search_Radius = DMIN(2.0 * BlackholeTempInfo[i].Yuan18_Bondi_Search_Radius, R_cap_phys);
+                BlackholeTempInfo[i].BondiRadius_WeightedSum = 0;
+                BlackholeTempInfo[i].Bondi_WeightSum = 0;
+                need_more_local = 1;
+            }
+        }
+        MPI_Allreduce(&need_more_local, &need_more_global, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+        loop_iteration++;
+    } while(need_more_global);
 #include "../../system/code_block_xchange_perform_ops_demalloc.h"
     CPU_Step[CPU_BLACKHOLES] += measure_time();
 }

@@ -500,7 +500,6 @@ void init(void)
                 BPP(i).Yuan18_BH_J_dir[0] = 0; BPP(i).Yuan18_BH_J_dir[1] = 0; BPP(i).Yuan18_BH_J_dir[2] = 0;
                 BPP(i).Yuan18_BH_reservoir_v_wind    = 0;
                 BPP(i).Yuan18_BH_reservoir_eps_wind  = 0;
-                BPP(i).Yuan18_BH_reservoir_r_inject  = 0;
                 BPP(i).Yuan18_BH_reservoir_mode_wind = 0;
                 BPP(i).Yuan18_BH_reservoir_J_dir[0] = 0; BPP(i).Yuan18_BH_reservoir_J_dir[1] = 0; BPP(i).Yuan18_BH_reservoir_J_dir[2] = 0;
 #endif

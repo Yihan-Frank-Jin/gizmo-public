@@ -306,7 +306,7 @@
 #BH_GRAVACCRETION_STELLARFBCORR # account for additional acceleration-dependent retention from stellar FB in Mdot. cite Hopkins et al., arXiv:2103.10444, for both the analytic derivation of these scalings and the numerical methods/implementation.
 #BH_BONDI=0                     # Bondi-Hoyle style accretion model: 0=default (with velocity); 1=dont use gas velocity with sound speed; 2=variable-alpha tweak (Booth & Schaye 2009; requires GALSF). cite Springel, Di Matteo, and Hernquist, 2005, MNRAS, 361, 776
 #BH_YUAN18_ACCRETION            # accretion model from Yuan et al. 2018, ApJ, 857, 121. cite Yuan et al. 2018, ApJ, 857, 121
-#BH_YUAN18_WIND                 # spawn-based wind injection from Yuan18/MACER AGN model (requires BH_YUAN18_ACCRETION). launches wind particles with Yuan18 mode-dependent angular distributions. cite Yuan et al. 2018, ApJ, 857, 121; Zhang et al. 2025, arXiv:2504.06342
+#BH_YUAN18_WIND=32              # spawn-based wind injection from Yuan18/MACER AGN model (requires BH_YUAN18_ACCRETION). value is the minimum wind-particle batch size, following BH_WIND_SPAWN-style thresholding and per-event cap max(20,3*BH_YUAN18_WIND). cite Yuan et al. 2018, ApJ, 857, 121; Zhang et al. 2025, arXiv:2504.06342
 #BH_YUAN18_WIND_FIXED_Z_AXIS    # debug option for BH_YUAN18_WIND: force the Yuan18 angular-distribution axis to the simulation z-axis instead of BH_Specific_AngMom/Jgas, useful for validating cos^2(theta) sampling
 ## ----------------------------------------------------------------------------------------------------
 # ----- feedback models/options
@@ -631,7 +631,6 @@
 #ALLOW_IMBALANCED_GASPARTICLELOAD # increases All.MaxPartGas to All.MaxPart: can allow better load-balancing in some cases, but uses more memory. But use me if you run into errors where it can't fit the domain (where you would increase PartAllocFac, but can't for some reason)
 #SEPARATE_STELLARDOMAINDECOMP   # separate stars (ptype=4+5) and other non-gas particles in domain decomposition (may help load-balancing)
 ####################################################################################################
-
 
 
 

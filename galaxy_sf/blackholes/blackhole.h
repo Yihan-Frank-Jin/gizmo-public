@@ -86,6 +86,8 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
     MyFloat BondiRadius_WeightedSum;
     MyFloat Bondi_WeightSum;
     MyFloat Bondi_Radius_Weighted;
+    MyFloat Yuan18_Bondi_Search_Radius;
+    int     Yuan18_Bondi_Search_Done;
     MyFloat yuan18_rho_p[YUAN18_N_FIB];   /* Σ_j m_j W(r_p-r_j,h_j): SPH density at each Fibonacci point [physical] */
     MyFloat yuan18_vrad_p[YUAN18_N_FIB];  /* Σ_j (m_j/ρ_j) v_rad_j W(r_p-r_j,h_j): SPH v_rad at each Fibonacci point [physical] */
     MyFloat debug_vrad_sum;  /* sum of yuan18_vrad_p[p] over inward Fibonacci points (debug) */
@@ -133,12 +135,12 @@ double target_mass_for_wind_spawning(int i);
 #define YUAN18_COS_ANG1_HOT 0.8660  /* cos(30 deg): outer (largest |cos theta|) bound of HOT biconical shell */
 #define YUAN18_COS_ANG2_HOT 0.3420  /* cos(70 deg): inner (smallest |cos theta|) bound of HOT biconical shell */
 #define YUAN18_COS_ANG_SUP  0.8660  /* cos(30 deg): inner (smallest |cos theta|) bound of SUP polar caps */
-#define YUAN18_WIND_N_MIN   32      /* minimum target-mass units accumulated before a Yuan18 wind spawn batch; keeps batches large enough to sample the angular distribution */
-void get_wind_spawn_direction_yuan18(int i, int num_spawned_this_call, int mode_wind,
+#define YUAN18_GOLDEN_RATIO_CONJUGATE 0.6180339887498948482 /* low-discrepancy azimuth increment */
+void get_wind_spawn_direction_yuan18(int i, int num_spawned_this_call, int n_particles_split, int mode_wind,
                                      double *ny, double *nz,
                                      double *veldir, double *dpdir);
 int spawn_bh_yuan18_wind_feedback(double *mass_spawned_out);
-int  blackhole_yuan18_spawn_particle_wind_shell(int i, int dummy_cell_i_to_clone, int num_already_spawned);
+int  blackhole_yuan18_spawn_particle_wind_shell(int i, int num_already_spawned);
 #endif
 
 /* blackhole_feed.c */

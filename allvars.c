@@ -268,7 +268,7 @@ FILE *FdBhFormationDetails;
 FILE *FdBlackHolesDetails;
 #ifdef BH_OUTPUT_MOREINFO
 FILE *FdBhMergerDetails;
-#ifdef BH_WIND_KICK
+#if defined(BH_WIND_KICK) || defined(BH_YUAN18_WIND)
 FILE *FdBhWindDetails;
 #endif
 #endif

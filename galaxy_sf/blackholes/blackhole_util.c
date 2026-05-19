@@ -113,7 +113,7 @@ void blackhole_end(void)
         fflush(FdBlackHolesDetails);
 #ifdef BH_OUTPUT_MOREINFO
         fflush(FdBhMergerDetails);
-#ifdef BH_WIND_KICK
+#if defined(BH_WIND_KICK) || defined(BH_YUAN18_WIND)
         fflush(FdBhWindDetails);
 #endif
 #endif
