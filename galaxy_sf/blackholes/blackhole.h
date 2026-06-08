@@ -82,24 +82,31 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
     MyFloat kernel_norm_topass_in_swallowloop;
 #endif
 #ifdef BH_YUAN18_ACCRETION
-#define YUAN18_N_FIB 1000
+#ifndef YUAN18_BONDI_FLUX_N_SAMPLES
+#define YUAN18_BONDI_FLUX_N_SAMPLES 64
+#endif
+#define YUAN18_GOLDEN_RATIO_CONJUGATE 0.6180339887498948482 /* low-discrepancy azimuth increment */
     MyFloat BondiRadius_WeightedSum;
     MyFloat Bondi_WeightSum;
     MyFloat Bondi_Radius_Weighted;
-    MyFloat Yuan18_Bondi_Search_Radius;
-    int     Yuan18_Bondi_Search_Done;
-    MyFloat yuan18_rho_p[YUAN18_N_FIB];   /* Σ_j m_j W(r_p-r_j,h_j): SPH density at each Fibonacci point [physical] */
-    MyFloat yuan18_vrad_p[YUAN18_N_FIB];  /* Σ_j (m_j/ρ_j) v_rad_j W(r_p-r_j,h_j): SPH v_rad at each Fibonacci point [physical] */
-    MyFloat debug_vrad_sum;  /* sum of yuan18_vrad_p[p] over inward Fibonacci points (debug) */
-    MyFloat debug_rho_sum;   /* sum of yuan18_rho_p[p] over inward Fibonacci points (debug) */
-    MyFloat debug_n_inward;  /* count of Fibonacci points with yuan18_vrad_p[p] < 0 */
+    MyFloat Yuan18_Mdot_Flux;       /* kernel-interpolated inward mass flux through the Bondi sphere [mass/time] */
+    MyFloat Yuan18_Flux_WeightSum;  /* diagnostic kernel coverage of the Fibonacci Bondi-sphere samples */
+    MyFloat Yuan18_Rho_Sample[YUAN18_BONDI_FLUX_N_SAMPLES];
+    MyFloat Yuan18_Rhovr_Sample[YUAN18_BONDI_FLUX_N_SAMPLES];
+    MyFloat Yuan18_Wt_Sample[YUAN18_BONDI_FLUX_N_SAMPLES];
     MyFloat Yuan18_v_wind;
     MyFloat Yuan18_eps_wind;
     MyFloat Yuan18_f_accreted;           /* mdot_bh / mdot_bondi; used by BH_WIND_KICK path */
     MyFloat Yuan18_mdot_wind;            /* mdot_bondi - mdot_bh (>= 0) */
     int     Yuan18_mode_wind;            /* matches yuan18.cpp OutflowMode: 0=NONE, 1=HOT, 2=SUB, 3=SUP, 4=JET */
     MyFloat Yuan18_L_rad;                /* eps_rad * mdot_bh * c^2 [code energy/time] */
-    MyFloat Yuan18_r_inject;            /* injection surface (physical): r_tr (hot) or R_bondi (cold/super) */
+    MyFloat Yuan18_r_inject;            /* injection/coupling surface (physical): currently R_bondi for hot/cold/super modes */
+    MyFloat Yuan18_J_dir[3];             /* normalized Yuan18 wind axis for feedback coupling */
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+    MyFloat Yuan18_wind_angle_weighted_kernel_sum; /* Yuan18-specific continuous wind normalization on the injection surface */
+    MyFloat Yuan18_wind_angle_weighted_kernel_sum_pos; /* positive Yuan18-axis hemisphere normalization */
+    MyFloat Yuan18_wind_angle_weighted_kernel_sum_neg; /* negative Yuan18-axis hemisphere normalization */
+#endif
 #endif
 }
 *BlackholeTempInfo;
@@ -124,18 +131,19 @@ void blackhole_environment_loop(void);
 void blackhole_environment_second_loop(void);
 #endif
 #ifdef BH_YUAN18_ACCRETION
-void blackhole_bondi_radius_loop(void); /* dedicated wide-search loop for weighted Bondi radius */
+void blackhole_bondi_radius_loop(void); /* dedicated all-gas loop for weighted Bondi radius */
 void blackhole_mass_flux_loop(void);
 #endif
 /* blackhole_swallow_and_kick.c */
 void blackhole_swallow_and_kick_loop(void);
 double target_mass_for_wind_spawning(int i);
-#ifdef BH_YUAN18_WIND
+#if defined(BH_YUAN18_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS)
 /* Yuan18 angular cone constants -- match yuan18.cpp InnerX1() defaults */
 #define YUAN18_COS_ANG1_HOT 0.8660  /* cos(30 deg): outer (largest |cos theta|) bound of HOT biconical shell */
 #define YUAN18_COS_ANG2_HOT 0.3420  /* cos(70 deg): inner (smallest |cos theta|) bound of HOT biconical shell */
 #define YUAN18_COS_ANG_SUP  0.8660  /* cos(30 deg): inner (smallest |cos theta|) bound of SUP polar caps */
-#define YUAN18_GOLDEN_RATIO_CONJUGATE 0.6180339887498948482 /* low-discrepancy azimuth increment */
+#endif
+#ifdef BH_YUAN18_SPAWN
 void get_wind_spawn_direction_yuan18(int i, int num_spawned_this_call, int n_particles_split, int mode_wind,
                                      double *ny, double *nz,
                                      double *veldir, double *dpdir);

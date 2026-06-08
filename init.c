@@ -491,7 +491,7 @@ void init(void)
                 BPP(i).Yuan18_BH_Mass_disk    = 0;
                 BPP(i).Yuan18_BH_Mdot_Bondi   = 0;
 #endif
-#ifdef BH_YUAN18_WIND
+#ifdef BH_YUAN18_SPAWN
                 BPP(i).Yuan18_BH_reservoir_mass = 0;
                 BPP(i).Yuan18_BH_v_wind    = 0;
                 BPP(i).Yuan18_BH_eps_wind  = 0;
@@ -684,6 +684,15 @@ void init(void)
 #if defined(BH_THERMALFEEDBACK)
         SphP[i].Injected_BH_Energy = 0;
 #endif
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+        if(RestartFlag == 0)
+        {
+            SphP[i].Yuan18WindMass = 0;
+            SphP[i].Yuan18WindEnergy = 0;
+            for(j=0;j<3;j++) {SphP[i].Yuan18WindMomentum[j] = 0;}
+            SphP[i].Yuan18WindLastMode = 0;
+        }
+#endif
     }
 
 #ifndef BOX_SHEARING
@@ -740,7 +749,7 @@ void init(void)
 #ifdef BH_WIND_SPAWN
     Max_Unspawned_MassUnits_fromSink = 0;
 #endif
-#ifdef BH_YUAN18_WIND
+#ifdef BH_YUAN18_SPAWN
     Max_Yuan18_WindReservoirMassUnits_fromSink = 0;
 #endif
 

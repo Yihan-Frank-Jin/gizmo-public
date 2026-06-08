@@ -168,7 +168,7 @@ int N_stars;
 #ifdef BH_WIND_SPAWN
 double  Max_Unspawned_MassUnits_fromSink;
 #endif
-#ifdef BH_YUAN18_WIND
+#ifdef BH_YUAN18_SPAWN
 double  Max_Yuan18_WindReservoirMassUnits_fromSink;
 #endif
 
@@ -268,7 +268,7 @@ FILE *FdBhFormationDetails;
 FILE *FdBlackHolesDetails;
 #ifdef BH_OUTPUT_MOREINFO
 FILE *FdBhMergerDetails;
-#if defined(BH_WIND_KICK) || defined(BH_YUAN18_WIND)
+#if defined(BH_WIND_KICK) || defined(BH_YUAN18_SPAWN)
 FILE *FdBhWindDetails;
 #endif
 #endif

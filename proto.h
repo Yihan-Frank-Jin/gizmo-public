@@ -435,7 +435,7 @@ void get_wind_spawn_magnetic_field(int j, int mode, double *ny, double *nz,  dou
 int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int num_already_spawned );
 void spawn_bh_wind_feedback(void);
 #endif
-#ifdef BH_YUAN18_WIND
+#ifdef BH_YUAN18_SPAWN
 int spawn_bh_yuan18_wind_feedback(double *mass_spawned_out);
 #endif
 int blackhole_evaluate(int target, int mode, int *nexport, int *nsend_local);
@@ -684,6 +684,10 @@ char *GetMultiSpeciesFilename(int i, int hk);
 
 double bh_angleweight(double bh_lum_input, MyFloat bh_angle[3], double dx, double dy, double dz);
 double bh_angleweight_localcoupling(int j, double cos_theta, double r, double H_bh);
+#if defined(BH_YUAN18_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS)
+double yuan18_wind_injection_radius_code(double r_inject_physical);
+#endif
+double yuan18_wind_shellweight_localcoupling(int j, double cos_theta, double r, double r_inject, int mode_wind);
 
 #if defined(GALSF_SUBGRID_WINDS)
 void assign_wind_kick_from_sf_routine(int i, double sm, double dtime, double* pvtau_return);

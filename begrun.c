@@ -355,7 +355,7 @@ void begrun(void)
         All.BAL_internal_temperature = all.BAL_internal_temperature;
         All.BAL_wind_particle_mass = all.BAL_wind_particle_mass; // dangeous to change this, as it is also part of the merger criterion!
 #endif
-#ifdef BH_YUAN18_WIND
+#ifdef BH_YUAN18_SPAWN
         All.BAL_wind_particle_mass = all.BAL_wind_particle_mass; // dangeous to change this, as it is also part of the merger criterion!
 #endif
 #ifdef BH_PHOTONMOMENTUM
@@ -622,7 +622,7 @@ void open_outputfiles(void)
 #ifdef BH_OUTPUT_MOREINFO
   sprintf(buf, "%sblackhole_details/bhmergers_%d.txt", All.OutputDir, ThisTask);
   if(!(FdBhMergerDetails = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
-#if defined(BH_WIND_KICK) || defined(BH_YUAN18_WIND)
+#if defined(BH_WIND_KICK) || defined(BH_YUAN18_SPAWN)
   sprintf(buf, "%sblackhole_details/bhwinds_%d.txt", All.OutputDir, ThisTask);
   if(!(FdBhWindDetails = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
 #endif
@@ -1500,7 +1500,7 @@ void read_parameter_file(char *fname)
         id[nt++] = REAL;
 #endif
 #endif
-#ifdef BH_YUAN18_WIND
+#ifdef BH_YUAN18_SPAWN
         strcpy(tag[nt], "BAL_wind_particle_mass");
         strcpy(alternate_tag[nt], "Cell_Spawn_Mass_ratio");
         addr[nt] = &All.BAL_wind_particle_mass;
@@ -2424,7 +2424,7 @@ void read_parameter_file(char *fname)
 #ifdef BH_WIND_SPAWN
     All.AGNWindID = 1913298393;       // this seems weird, but is the bitshifted version of 1234568912345 for not long IDs.
 #endif
-#ifdef BH_YUAN18_WIND
+#ifdef BH_YUAN18_SPAWN
     All.AGNWindID = 1913298393;       // matches BH_WIND_SPAWN; tags spawned Yuan18 wind particles with a unique sentinel ID
 #endif
 

@@ -392,6 +392,51 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                 }
 #endif           
             break;
+
+        case IO_YUAN18_WIND_MASS:
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) SphP[pindex].Yuan18WindMass;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_YUAN18_WIND_ENERGY:
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) SphP[pindex].Yuan18WindEnergy;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_YUAN18_WIND_MOMENTUM:
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    for(k=0;k<3;k++) {fp[k] = (MyOutputFloat) SphP[pindex].Yuan18WindMomentum[k];}
+                    fp += 3;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_YUAN18_WIND_LASTMODE:
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *ip_int++ = SphP[pindex].Yuan18WindLastMode;
+                    n++;
+                }
+#endif
+            break;
             
         case IO_CRATE:
 #if defined(OUTPUT_COOLRATE_DETAIL) && defined(COOLING)
@@ -1833,6 +1878,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_HALL:
         case IO_OHMIC:
         case IO_INIB:
+        case IO_YUAN18_WIND_MOMENTUM:
         case IO_GRADPHI:
         case IO_GRADRHO:
         case IO_RAD_ACCEL:
@@ -1855,6 +1901,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_GRAINTYPE:
         case IO_EOSCOMP:
         case IO_STAGE_PROTOSTAR:
+        case IO_YUAN18_WIND_LASTMODE:
             bytes_per_blockelement = sizeof(int);
             break;
             
@@ -1872,6 +1919,8 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_DUST_TEMP:
         case IO_IDEN:
         case IO_UNSPMASS:
+        case IO_YUAN18_WIND_MASS:
+        case IO_YUAN18_WIND_ENERGY:
         case IO_CRATE:
         case IO_HRATE:
         case IO_NHRATE:
@@ -2139,6 +2188,7 @@ int get_datatype_in_block(enum iofields blocknr)
         case IO_GRAINTYPE:
         case IO_EOSCOMP:
         case IO_STAGE_PROTOSTAR:
+        case IO_YUAN18_WIND_LASTMODE:
             typekey = 0;		/* native int */
             break;
             
@@ -2169,6 +2219,7 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_RAD_ACCEL:
         case IO_VORT:
         case IO_BH_ANGMOM:
+        case IO_YUAN18_WIND_MOMENTUM:
         case IO_ANNIHILATION_RADIATION:
             values = 3;
             break;
@@ -2189,6 +2240,9 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_DUST_TEMP:
         case IO_IDEN:
         case IO_UNSPMASS:
+        case IO_YUAN18_WIND_MASS:
+        case IO_YUAN18_WIND_ENERGY:
+        case IO_YUAN18_WIND_LASTMODE:
         case IO_CRATE:
         case IO_HRATE:
         case IO_NHRATE:
@@ -2469,6 +2523,10 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_HeII:
         case IO_INIB:
         case IO_IDEN:
+        case IO_YUAN18_WIND_MASS:
+        case IO_YUAN18_WIND_ENERGY:
+        case IO_YUAN18_WIND_MOMENTUM:
+        case IO_YUAN18_WIND_LASTMODE:
         case IO_CRATE:
         case IO_HRATE:
         case IO_NHRATE:
@@ -2837,6 +2895,15 @@ int blockpresent(enum iofields blocknr)
 #if defined(BH_WIND_SPAWN) && defined(BH_DEBUG_SPAWN_JET_TEST)
             return 1;
 #endif   
+            break;
+
+        case IO_YUAN18_WIND_MASS:
+        case IO_YUAN18_WIND_ENERGY:
+        case IO_YUAN18_WIND_MOMENTUM:
+        case IO_YUAN18_WIND_LASTMODE:
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+            return 1;
+#endif
             break;
 
         case IO_CRATE:
@@ -3315,6 +3382,18 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_UNSPMASS:
             strncpy(label, "USPM", 4);
             break;     
+        case IO_YUAN18_WIND_MASS:
+            strncpy(label, "Y18M", 4);
+            break;
+        case IO_YUAN18_WIND_ENERGY:
+            strncpy(label, "Y18E", 4);
+            break;
+        case IO_YUAN18_WIND_MOMENTUM:
+            strncpy(label, "Y18P", 4);
+            break;
+        case IO_YUAN18_WIND_LASTMODE:
+            strncpy(label, "Y18L", 4);
+            break;
         case IO_CRATE:
             strncpy(label, "CRATE", 4);
             break;
@@ -3755,6 +3834,18 @@ void get_dataset_name(enum iofields blocknr, char *buf)
         case IO_UNSPMASS:
             strcpy(buf, "Unspawned_Wind_Mass");
             break;     
+        case IO_YUAN18_WIND_MASS:
+            strcpy(buf, "Yuan18WindMass");
+            break;
+        case IO_YUAN18_WIND_ENERGY:
+            strcpy(buf, "Yuan18WindEnergy");
+            break;
+        case IO_YUAN18_WIND_MOMENTUM:
+            strcpy(buf, "Yuan18WindMomentum");
+            break;
+        case IO_YUAN18_WIND_LASTMODE:
+            strcpy(buf, "Yuan18WindLastMode");
+            break;
         case IO_CRATE:
             strcpy(buf, "CoolingRate");
             break;
@@ -4987,7 +5078,7 @@ void write_header_attributes_in_hdf5(hid_t handle)
     hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "MinFoFMassForNewSeed", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.MinFoFMassForNewSeed); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 #endif
-#if defined(BH_WIND_SPAWN) || defined(BH_YUAN18_WIND)
+#if defined(BH_WIND_SPAWN) || defined(BH_YUAN18_SPAWN)
     hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Cell_Spawn_Mass_ratio", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BAL_wind_particle_mass); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 #endif
@@ -4999,7 +5090,7 @@ void write_header_attributes_in_hdf5(hid_t handle)
     hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BAL_internal_temperature", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BAL_internal_temperature); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 #endif
-#if defined(BH_WIND_SPAWN) || defined(BH_YUAN18_WIND)
+#if defined(BH_WIND_SPAWN) || defined(BH_YUAN18_SPAWN)
     {unsigned long long holder = (unsigned long long) All.AGNWindID; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Spawned_Cell_ID", H5T_NATIVE_ULLONG, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_ULLONG, &holder); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
 #endif

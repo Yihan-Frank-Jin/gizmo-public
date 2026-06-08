@@ -435,11 +435,20 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #endif
 #endif
 
-#if defined(BH_YUAN18_WIND) && !defined(BH_YUAN18_ACCRETION)
-#error "BH_YUAN18_WIND requires BH_YUAN18_ACCRETION (mode determination, mdot_wind, v_wind, r_tr all come from the Yuan18 accretion pipeline)."
+#if defined(BH_YUAN18_SPAWN) && !defined(BH_YUAN18_ACCRETION)
+#error "BH_YUAN18_SPAWN requires BH_YUAN18_ACCRETION (mode determination, mdot_wind, v_wind, r_tr all come from the Yuan18 accretion pipeline)."
 #endif
-#if defined(BH_WIND_SPAWN) && defined(BH_YUAN18_WIND)
-#error "BH_WIND_SPAWN and BH_YUAN18_WIND are mutually exclusive: enable exactly one wind-injection mechanism per build."
+#if defined(BH_YUAN18_WIND_CONTINUOUS) && !defined(BH_YUAN18_ACCRETION)
+#error "BH_YUAN18_WIND_CONTINUOUS requires BH_YUAN18_ACCRETION (mode determination, mdot_wind, v_wind, r_tr all come from the Yuan18 accretion pipeline)."
+#endif
+#if defined(BH_YUAN18_WIND_CONTINUOUS) && !defined(BH_WIND_CONTINUOUS)
+#error "BH_YUAN18_WIND_CONTINUOUS requires BH_WIND_CONTINUOUS: it reuses the continuous wind coupling loop on the Yuan18 injection surface."
+#endif
+#if defined(BH_YUAN18_SPAWN) && defined(BH_YUAN18_WIND_CONTINUOUS)
+#error "BH_YUAN18_SPAWN and BH_YUAN18_WIND_CONTINUOUS are mutually exclusive: choose the spawn or continuous Yuan18 wind implementation."
+#endif
+#if defined(BH_WIND_SPAWN) && defined(BH_YUAN18_SPAWN)
+#error "BH_WIND_SPAWN and BH_YUAN18_SPAWN are mutually exclusive: enable exactly one wind-injection mechanism per build."
 #endif
 
 #if defined(SINGLE_STAR_FB_LOCAL_RP) // use standard angle-weighted local coupling to impart photon momentum from stars
@@ -1784,7 +1793,7 @@ extern int N_stars;
 #ifdef BH_WIND_SPAWN
 extern double Max_Unspawned_MassUnits_fromSink;
 #endif
-#ifdef BH_YUAN18_WIND
+#ifdef BH_YUAN18_SPAWN
 extern double Max_Yuan18_WindReservoirMassUnits_fromSink;
 #endif
 
@@ -1913,7 +1922,7 @@ extern FILE *FdBhFormationDetails;
 extern FILE *FdBlackHolesDetails;
 #ifdef BH_OUTPUT_MOREINFO
 extern FILE *FdBhMergerDetails;
-#if defined(BH_WIND_KICK) || defined(BH_YUAN18_WIND)
+#if defined(BH_WIND_KICK) || defined(BH_YUAN18_SPAWN)
 extern FILE *FdBhWindDetails;
 #endif
 #endif
@@ -2432,7 +2441,7 @@ extern struct global_data_all_processes
   double Cell_Spawn_Mass_ratio_MS;        /*!< target mass for feedback particles to be spawned for main sequence winds in STARFORGE*/
 #endif
 #endif
-#ifdef BH_YUAN18_WIND
+#ifdef BH_YUAN18_SPAWN
   double BAL_wind_particle_mass;        /*!< target mass for spawned Yuan18 wind particles */
   MyIDType AGNWindID;                   /*!< unique ID assigned to spawned Yuan18 wind particles */
 #endif
@@ -2526,10 +2535,10 @@ extern ALIGN(32) struct particle_data
     short int TimeBin;
     MyIDType ID;                    /*! < unique ID of particle (assigned at beginning of the simulation) */
     MyIDType ID_child_number;       /*! < child number for particles 'split' from main (retain ID, get new child number) */
-#if !defined(BH_WIND_SPAWN) && !defined(BH_YUAN18_WIND)
+#if !defined(BH_WIND_SPAWN) && !defined(BH_YUAN18_SPAWN)
     int ID_generation;              /*! < generation (need to track for particle-splitting to ensure each 'child' gets a unique child number */
 #else
-    MyIDType ID_generation;          /*! < widened to MyIDType when any spawn pipeline is active (BH_WIND_SPAWN or BH_YUAN18_WIND) so spawned particles can store the parent's full MyIDType ID */
+    MyIDType ID_generation;          /*! < widened to MyIDType when any spawn pipeline is active (BH_WIND_SPAWN or BH_YUAN18_SPAWN) so spawned particles can store the parent's full MyIDType ID */
 #endif
 
     integertime Ti_begstep;         /*!< marks start of current timestep of particle on integer timeline */
@@ -2751,10 +2760,10 @@ extern ALIGN(32) struct particle_data
     MyFloat Yuan18_BH_Mdot_Bondi;
     MyFloat Yuan18_BH_Bondi_Radius; /* weighted Bondi radius from previous timestep [physical]; used as search-radius floor in bondi_radius_loop */
 #endif
-#ifdef BH_YUAN18_WIND
+#ifdef BH_YUAN18_SPAWN
     MyFloat Yuan18_BH_v_wind;             /* current wind launch speed [physical code units]; persisted from BlackholeTempInfo in set_blackhole_mdot */
     MyFloat Yuan18_BH_eps_wind;           /* current wind specific internal energy [code units] */
-    MyFloat Yuan18_BH_r_inject;           /* current wind launch radius [physical code units]: r_tr in HOT mode, R_bondi in SUB/SUP modes */
+    MyFloat Yuan18_BH_r_inject;           /* current wind injection/coupling radius [physical code units]: currently R_bondi for HOT/SUB/SUP modes */
     int     Yuan18_BH_mode_wind;          /* current OutflowMode: 0=NONE, 1=HOT, 2=SUB, 3=SUP (matches yuan18.cpp) */
     MyFloat Yuan18_BH_J_dir[3];           /* normalized current Yuan18 wind axis: fixed z-axis in debug builds, otherwise BH_Specific_AngMom only. Zero vector means sampler falls back to z-axis */
     MyFloat Yuan18_BH_reservoir_mass;     /* accumulated Yuan18 wind mass queued for the next spawn batch [code mass] */
@@ -3097,6 +3106,12 @@ extern struct gas_cell_data
 
 #if defined(BH_THERMALFEEDBACK)
     MyDouble Injected_BH_Energy;
+#endif
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+    MyDouble Yuan18WindMass;          /*!< cumulative Yuan18 continuous wind mass coupled to this gas cell */
+    MyDouble Yuan18WindEnergy;        /*!< cumulative Yuan18 continuous wind material energy coupled to this gas cell */
+    MyDouble Yuan18WindMomentum[3];   /*!< cumulative Yuan18 continuous wind material momentum coupled to this gas cell */
+    int      Yuan18WindLastMode;      /*!< latest Yuan18 continuous wind mode coupled to this gas cell */
 #endif
 
 #ifdef COOLING
@@ -3641,6 +3656,10 @@ enum iofields
   IO_IDEN,
   IO_INIB,
   IO_UNSPMASS,
+  IO_YUAN18_WIND_MASS,
+  IO_YUAN18_WIND_ENERGY,
+  IO_YUAN18_WIND_MOMENTUM,
+  IO_YUAN18_WIND_LASTMODE,
   IO_CRATE,
   IO_HRATE,
   IO_NHRATE,

@@ -27,6 +27,11 @@ struct INPUT_STRUCT_NAME
 #if defined(BH_CALC_LOCAL_ANGLEWEIGHTS)
     MyFloat Jgas_in_Kernel[3];
 #endif
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+    MyFloat Yuan18_J_dir[3];
+    MyFloat Yuan18_r_inject;
+    int     Yuan18_mode_wind;
+#endif
 #if defined(BH_GRAVCAPTURE_GAS)
     MyFloat mass_to_swallow_edd;
 #endif
@@ -80,6 +85,11 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
     for(k=0;k<3;k++) {in->Jgas_in_Kernel[k] = BlackholeTempInfo[j_tempinfo].Jgas_in_Kernel[k];}
 #endif
 #endif
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+    for(k=0;k<3;k++) {in->Yuan18_J_dir[k] = BlackholeTempInfo[j_tempinfo].Yuan18_J_dir[k];}
+    in->Yuan18_r_inject = BlackholeTempInfo[j_tempinfo].Yuan18_r_inject;
+    in->Yuan18_mode_wind = BlackholeTempInfo[j_tempinfo].Yuan18_mode_wind;
+#endif
 #if defined(BH_GRAVCAPTURE_GAS)
     in->mass_to_swallow_edd = BlackholeTempInfo[j_tempinfo].mass_to_swallow_edd;
 #endif
@@ -97,6 +107,11 @@ struct OUTPUT_STRUCT_NAME
 { /* define variables below as e.g. "double X;" */
 #if defined(BH_CALC_LOCAL_ANGLEWEIGHTS)
     double BH_angle_weighted_kernel_sum;
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+    double Yuan18_wind_angle_weighted_kernel_sum;
+    double Yuan18_wind_angle_weighted_kernel_sum_pos;
+    double Yuan18_wind_angle_weighted_kernel_sum_neg;
+#endif
 #endif
 #ifdef BH_REPOSITION_ON_POTMIN
     double BH_MinPot, BH_MinPotPos[3];
@@ -111,6 +126,11 @@ static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, in
     int k, target; k=0; target = P[i].IndexMapToTempStruc;
 #if defined(BH_CALC_LOCAL_ANGLEWEIGHTS)
     ASSIGN_ADD_PRESET(BlackholeTempInfo[target].BH_angle_weighted_kernel_sum, out->BH_angle_weighted_kernel_sum, mode);
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+    ASSIGN_ADD_PRESET(BlackholeTempInfo[target].Yuan18_wind_angle_weighted_kernel_sum, out->Yuan18_wind_angle_weighted_kernel_sum, mode);
+    ASSIGN_ADD_PRESET(BlackholeTempInfo[target].Yuan18_wind_angle_weighted_kernel_sum_pos, out->Yuan18_wind_angle_weighted_kernel_sum_pos, mode);
+    ASSIGN_ADD_PRESET(BlackholeTempInfo[target].Yuan18_wind_angle_weighted_kernel_sum_neg, out->Yuan18_wind_angle_weighted_kernel_sum_neg, mode);
+#endif
 #endif
 #ifdef BH_REPOSITION_ON_POTMIN
     if(mode==0) {BPP(i).BH_MinPot=out->BH_MinPot; for(k=0;k<3;k++) {BPP(i).BH_MinPotPos[k]=out->BH_MinPotPos[k];}
@@ -156,14 +176,28 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
     double norm=0; for(k=0;k<3;k++) {norm+=J_dir[k]*J_dir[k];}
     if(norm>0) {norm=1/sqrt(norm); for(k=0;k<3;k++) {J_dir[k]*=norm;}} else {J_dir[0]=J_dir[1]=0; J_dir[2]=1;}
 #endif
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+    double Yuan18_J_dir[3]; for(k=0;k<3;k++) {Yuan18_J_dir[k] = local.Yuan18_J_dir[k];}
+    double yuan18_norm=0; for(k=0;k<3;k++) {yuan18_norm += Yuan18_J_dir[k]*Yuan18_J_dir[k];}
+    if(yuan18_norm>0) {yuan18_norm=1/sqrt(yuan18_norm); for(k=0;k<3;k++) {Yuan18_J_dir[k]*=yuan18_norm;}} else {Yuan18_J_dir[0]=Yuan18_J_dir[1]=0; Yuan18_J_dir[2]=1;}
+    double yuan18_r_inject_code = yuan18_wind_injection_radius_code(local.Yuan18_r_inject);
+#endif
 #ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS
     sink_radius = local.SinkRadius;
 #endif
     /* Now start the actual neighbor computation for this particle */
+    double ngb_search_radius = h_i;
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+    if(yuan18_r_inject_code > 0 && local.Yuan18_mode_wind > 0)
+    {
+        double yuan18_shell_search_buffer = DMAX(h_i, Extnodes[All.MaxPart].hmax);
+        ngb_search_radius = DMAX(ngb_search_radius, yuan18_r_inject_code + yuan18_shell_search_buffer);
+    }
+#endif
     if(mode == 0) {startnode = All.MaxPart; /* root node */} else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;    /* open it */}
     while(startnode >= 0) {
         while(startnode >= 0) {
-            numngb = ngb_treefind_pairs_threads_targeted(local.Pos, h_i, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, BH_NEIGHBOR_BITFLAG);
+            numngb = ngb_treefind_pairs_threads_targeted(local.Pos, ngb_search_radius, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, BH_NEIGHBOR_BITFLAG);
             if(numngb < 0) {return -2;}
             for(n = 0; n < numngb; n++)
             {
@@ -173,11 +207,31 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
                     for(k=0;k<3;k++) {dpos[k] = P[j].Pos[k] - local.Pos[k]; dvel[k]=P[j].Vel[k]-local.Vel[k];}
                     NEAREST_XYZ(dpos[0],dpos[1],dpos[2],-1); r2=0; for(k=0;k<3;k++) {r2 += dpos[k]*dpos[k];}
                     NGB_SHEARBOX_BOUNDARY_VELCORR_(local.Pos,P[j].Pos,dvel,-1); /* wrap velocities for shearing boxes if needed */
+                    r=sqrt(r2);
                     double heff_j = DMAX( PPP[j].Hsml , ForceSoftening_KernelRadius(j) );
-                    if(r2 < h_i2 || r2 < heff_j*heff_j)
+                    int bh_local_candidate = (r2 < h_i2 || r2 < heff_j*heff_j);
+                    int yuan18_shell_candidate = 0;
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+                    if((P[j].Type == 0) && (yuan18_r_inject_code > 0) && (PPP[j].Hsml > 0) && (fabs(r - yuan18_r_inject_code) < PPP[j].Hsml)) {yuan18_shell_candidate = 1;}
+                    if(yuan18_shell_candidate && !bh_local_candidate && local.Dt>0 && r>0 && P[j].Mass>0)
+                    {
+                        MyIDType SwallowID_j_shell;
+                        #pragma omp atomic read
+                        SwallowID_j_shell = P[j].SwallowID;
+                        if(SwallowID_j_shell == 0)
+                        {
+                            double yuan18_cos_theta=0; for(k=0;k<3;k++) {yuan18_cos_theta += (dpos[k]/r)*Yuan18_J_dir[k];}
+                            double yuan18_shell_wt = yuan18_wind_shellweight_localcoupling(j,yuan18_cos_theta,r,yuan18_r_inject_code,local.Yuan18_mode_wind);
+                            out.Yuan18_wind_angle_weighted_kernel_sum += yuan18_shell_wt;
+                            if(yuan18_cos_theta >= 0) {out.Yuan18_wind_angle_weighted_kernel_sum_pos += yuan18_shell_wt;}
+                            else {out.Yuan18_wind_angle_weighted_kernel_sum_neg += yuan18_shell_wt;}
+                        }
+                    }
+#endif
+                    if(bh_local_candidate)
                     {
                         vrel=0; for(k=0;k<3;k++) {vrel += dvel[k]*dvel[k];}
-                        r=sqrt(r2); vrel=sqrt(vrel)/All.cf_atime;  /* relative velocity in physical units. do this once and use below */
+                        vrel=sqrt(vrel)/All.cf_atime;  /* relative velocity in physical units. do this once and use below */
 #if defined(MAGNETIC) && defined(GRAIN_LORENTZFORCE) /* need to project grain velocities, shouldn't include gyro motion */
                         if((1<<P[j].Type) & GRAIN_PTYPES) {vrel=0; double bmag2=0; for(k=0;k<3;k++) {vrel+=dvel[k]*P[j].Gas_B[k]; bmag2+=P[j].Gas_B[k]*P[j].Gas_B[k];}
                             vrel = (fabs(vrel)/sqrt(bmag2)) / All.cf_atime;}
@@ -361,6 +415,13 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
                             { /* cos_theta with respect to disk of BH is given by dot product of r and Jgas */
                                 norm=0; for(k=0;k<3;k++) {norm+=(dpos[k]/r)*J_dir[k];}
                                 out.BH_angle_weighted_kernel_sum += bh_angleweight_localcoupling(j,norm,r,h_i);
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+                                double yuan18_cos_theta=0; for(k=0;k<3;k++) {yuan18_cos_theta += (dpos[k]/r)*Yuan18_J_dir[k];}
+                                double yuan18_shell_wt = yuan18_wind_shellweight_localcoupling(j,yuan18_cos_theta,r,yuan18_r_inject_code,local.Yuan18_mode_wind);
+                                out.Yuan18_wind_angle_weighted_kernel_sum += yuan18_shell_wt;
+                                if(yuan18_cos_theta >= 0) {out.Yuan18_wind_angle_weighted_kernel_sum_pos += yuan18_shell_wt;}
+                                else {out.Yuan18_wind_angle_weighted_kernel_sum_neg += yuan18_shell_wt;}
+#endif
                             }
 #endif
 #ifdef BH_THERMALFEEDBACK

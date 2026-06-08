@@ -273,15 +273,15 @@ void calculate_non_standard_physics(void)
 #endif
 #endif
 
-#ifdef BH_YUAN18_WIND  /* parallel to BH_WIND_SPAWN; mutually exclusive (#error guard in allvars.h). BH_YUAN18_WIND gives the Yuan18 spawn threshold in target-mass units. */
+#ifdef BH_YUAN18_SPAWN  /* parallel to BH_WIND_SPAWN; mutually exclusive (#error guard in allvars.h). BH_YUAN18_SPAWN gives the Yuan18 spawn threshold in target-mass units. */
         double Max_Yuan18_WindReservoirMassUnits_fromSink_global;
         MPI_Allreduce(&Max_Yuan18_WindReservoirMassUnits_fromSink, &Max_Yuan18_WindReservoirMassUnits_fromSink_global, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
         double yuan18_wind_max_reservoir_particles = Max_Yuan18_WindReservoirMassUnits_fromSink_global;
         double yuan18_wind_mass_in_reservoir = yuan18_wind_max_reservoir_particles * All.BAL_wind_particle_mass;
-        double yuan18_wind_mass_threshold = BH_YUAN18_WIND * All.BAL_wind_particle_mass;
+        double yuan18_wind_mass_threshold = BH_YUAN18_SPAWN * All.BAL_wind_particle_mass;
         int yuan18_wind_particles_spawned = 0;
         double yuan18_wind_mass_spawned = 0;
-        if(Max_Yuan18_WindReservoirMassUnits_fromSink_global >= BH_YUAN18_WIND)
+        if(Max_Yuan18_WindReservoirMassUnits_fromSink_global >= BH_YUAN18_SPAWN)
         {
             yuan18_wind_particles_spawned = spawn_bh_yuan18_wind_feedback(&yuan18_wind_mass_spawned);
             if(yuan18_wind_particles_spawned > 0)

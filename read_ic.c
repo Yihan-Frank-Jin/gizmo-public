@@ -551,6 +551,30 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
              for(n = 0; n < pc; n++) {P[offset + n].unspawned_wind_mass = *fp++;}
 #endif
             break; 
+
+        case IO_YUAN18_WIND_MASS:
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+             for(n = 0; n < pc; n++) {SphP[offset + n].Yuan18WindMass = *fp++;}
+#endif
+            break;
+
+        case IO_YUAN18_WIND_ENERGY:
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+             for(n = 0; n < pc; n++) {SphP[offset + n].Yuan18WindEnergy = *fp++;}
+#endif
+            break;
+
+        case IO_YUAN18_WIND_MOMENTUM:
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+             for(n = 0; n < pc; n++) {for(k=0;k<3;k++) {SphP[offset + n].Yuan18WindMomentum[k] = *fp++;}}
+#endif
+            break;
+
+        case IO_YUAN18_WIND_LASTMODE:
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+             for(n = 0; n < pc; n++) {SphP[offset + n].Yuan18WindLastMode = *ip_int++;}
+#endif
+            break;
             
         case IO_IDEN:
 #if defined(BH_WIND_SPAWN_SET_BFIELD_POLTOR) && defined(BH_DEBUG_SPAWN_JET_TEST)

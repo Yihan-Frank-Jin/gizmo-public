@@ -12,19 +12,15 @@ GIZMO_config.h
 
 CLAUDE.md
 
-scripts/yuan18.cpp
-
-
 .claude/
 
 GIZMO
+GIZMO_*
 
 .vscode
 
 AGENTS.md
 
-scripts/
-docs/superpowers/plans/2026-05-13-yuan18-fixed-n-wind-spawn.md
-.gitignore
-docs/superpowers/specs/2026-05-13-yuan18-fixed-n-wind-spawn-design.md
-docs/superpowers/plans/2026-05-14-yuan18-stratified-wind-angular-sampling.md
+docs/
+
+scripts/blackhole_adios_wind_randomized.c

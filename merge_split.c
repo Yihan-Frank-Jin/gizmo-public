@@ -580,6 +580,18 @@ int split_particle_i(int i, int n_particles_split, int i_nearest)
         /* boost the condition number to be conservative, so we don't trigger madness in the kernel */
         SphP[i].ConditionNumber *= 10.0;
         SphP[j].ConditionNumber = SphP[i].ConditionNumber;
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+        SphP[j].Yuan18WindMass = mass_of_new_particle * SphP[i].Yuan18WindMass;
+        SphP[i].Yuan18WindMass -= SphP[j].Yuan18WindMass;
+        SphP[j].Yuan18WindEnergy = mass_of_new_particle * SphP[i].Yuan18WindEnergy;
+        SphP[i].Yuan18WindEnergy -= SphP[j].Yuan18WindEnergy;
+        for(k=0;k<3;k++)
+        {
+            SphP[j].Yuan18WindMomentum[k] = mass_of_new_particle * SphP[i].Yuan18WindMomentum[k];
+            SphP[i].Yuan18WindMomentum[k] -= SphP[j].Yuan18WindMomentum[k];
+        }
+        SphP[j].Yuan18WindLastMode = SphP[i].Yuan18WindLastMode;
+#endif
 #ifdef MAGNETIC
         /* we evolve the -conserved- VB and Vphi, so this must be partitioned */
         for(k=0;k<3;k++) {
@@ -931,6 +943,12 @@ int merge_particles_ij(int i, int j)
     SphP[j].MaxSignalVel = sqrt(SphP[j].MaxSignalVel*SphP[j].MaxSignalVel + SphP[i].MaxSignalVel*SphP[i].MaxSignalVel); /* need to be conservative */
     PPP[j].Hsml = pow(pow(PPP[j].Hsml,NUMDIMS)+pow(PPP[i].Hsml,NUMDIMS),1.0/NUMDIMS); /* sum the volume of the two particles */
     SphP[j].ConditionNumber = SphP[j].ConditionNumber + SphP[i].ConditionNumber; /* sum to be conservative */
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+    SphP[j].Yuan18WindMass += SphP[i].Yuan18WindMass;
+    SphP[j].Yuan18WindEnergy += SphP[i].Yuan18WindEnergy;
+    for(k=0;k<3;k++) {SphP[j].Yuan18WindMomentum[k] += SphP[i].Yuan18WindMomentum[k];}
+    if(SphP[i].Yuan18WindLastMode != 0) {SphP[j].Yuan18WindLastMode = SphP[i].Yuan18WindLastMode;}
+#endif
 #ifdef ENERGY_ENTROPY_SWITCH_IS_ACTIVE
     SphP[j].MaxKineticEnergyNgb = DMAX(SphP[j].MaxKineticEnergyNgb,SphP[i].MaxKineticEnergyNgb); /* for the entropy/energy switch condition */
 #endif

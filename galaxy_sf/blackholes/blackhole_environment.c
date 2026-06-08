@@ -377,201 +377,127 @@ void blackhole_environment_loop(void)
 
 
 /* ============================================================================
- * BH_YUAN18_ACCRETION: Dedicated loop to compute the weighted Bondi radius.
+ * BH_YUAN18_ACCRETION: Dedicated all-gas loops for the weighted Bondi radius.
  *
- * WHY A SEPARATE LOOP:
- *   The weighted Bondi radius r_B_wtd = sum(w_j * r_B_j) / sum(w_j), where
- *   r_B_j = G*M_BH / u_j and w_j = m_j*|v_rad_j|, can easily exceed the
- *   BH kernel radius Hsml.  The first environment loop only searches within
- *   Hsml, so this dedicated loop uses a wider search radius.
- *
- * SEARCH RADIUS STRATEGY:
- *   Primary: 2 * Yuan18_BH_Bondi_Radius (Bondi radius from the previous timestep).
- *   First-step fallback: 2 * R_bondi_textbook = 2 * G*M_BH / u_mean, where
- *     u_mean is the kernel-mass-weighted mean internal energy from the first
- *     environment loop.  If u_mean == 0, fall back to the BH kernel radius Hsml.
- *   Absolute floor: always at least Hsml.
+ * The Yuan18 Bondi radius estimator is a global inflow-weighted quantity:
+ *     r_B,wtd = sum_j m_j |v_rad,j| (G M_BH / u_j) / sum_j m_j |v_rad,j|,
+ * over all gas with v_rad < 0. Do not stop at the first radius containing
+ * inflow; that creates a hard branch between inner and outer inflow populations.
  * ============================================================================ */
 #ifdef BH_YUAN18_ACCRETION
 
-#define CORE_FUNCTION_NAME blackhole_bondi_radius_evaluate
-#define CONDITIONFUNCTION_FOR_EVALUATION if(bhsink_isactive(i) && !BlackholeTempInfo[P[i].IndexMapToTempStruc].Yuan18_Bondi_Search_Done)
-#include "../../system/code_block_xchange_initialize.h"
-
-static inline double blackhole_yuan18_bondi_search_cap_phys(void)
+struct yuan18_active_bh_data
 {
-    double lx = All.BoxSize, ly = All.BoxSize, lz = All.BoxSize;
-#ifdef BOX_LONG_X
-    lx *= BOX_LONG_X;
-#endif
-#ifdef BOX_LONG_Y
-    ly *= BOX_LONG_Y;
-#endif
-#ifdef BOX_LONG_Z
-    lz *= BOX_LONG_Z;
-#endif
-    if(lx <= 0 || ly <= 0 || lz <= 0) {return MAX_REAL_NUMBER;}
-    return 0.5 * sqrt(lx*lx + ly*ly + lz*lz) * All.cf_atime;
-}
-
-static inline double blackhole_yuan18_initial_bondi_search_radius_phys(int i)
-{
-    int j_ti = P[i].IndexMapToTempStruc;
-    double R_prev_phys = BPP(i).Yuan18_BH_Bondi_Radius;
-    double R_search_phys;
-    if(R_prev_phys > 0)
-    {
-        R_search_phys = 2.0 * R_prev_phys;
-    } else {
-        double u_mean = BlackholeTempInfo[j_ti].BH_InternalEnergy;
-        double R_bondi_textbook = (u_mean > 0) ? All.G * BPP(i).BH_Mass / u_mean
-                                               : PPP[i].Hsml * All.cf_atime;
-        R_search_phys = 2.0 * R_bondi_textbook;
-    }
-    return DMAX(R_search_phys, PPP[i].Hsml * All.cf_atime);
-}
-
-struct INPUT_STRUCT_NAME
-{
-    int NodeList[NODELISTLENGTH];
     MyDouble Pos[3]; MyFloat Vel[3];
     MyDouble BH_Mass;
-    MyFloat  R_search_code;  /* tree-search radius in comoving code units */
-}
-*DATAIN_NAME, *DATAGET_NAME;
+    MyFloat R_flux_phys;
+    int OwnerTask;
+    int LocalIndex;
+};
 
-static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
+static int yuan18_gather_active_bh_list(struct yuan18_active_bh_data **bh_list_out)
 {
-    int k, j_ti = P[i].IndexMapToTempStruc;
-    for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k]; in->Vel[k]=P[i].Vel[k];}
-    in->BH_Mass = BPP(i).BH_Mass;
-    in->R_search_code = (MyFloat)(BlackholeTempInfo[j_ti].Yuan18_Bondi_Search_Radius / All.cf_atime);
-}
- 
-struct OUTPUT_STRUCT_NAME
-{
-    MyFloat BondiRadius_WeightedSum;
-    MyFloat Bondi_WeightSum;
-}
-*DATARESULT_NAME, *DATAOUT_NAME;
- 
-static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
-{
-    int target = P[i].IndexMapToTempStruc;
-    ASSIGN_ADD(BlackholeTempInfo[target].BondiRadius_WeightedSum, out->BondiRadius_WeightedSum, mode);
-    ASSIGN_ADD(BlackholeTempInfo[target].Bondi_WeightSum,         out->Bondi_WeightSum,         mode);
-}
- 
-/*!  Core neighbor loop for the dedicated Bondi radius pass.
- *   For every inflowing gas particle within R_search_code we compute
- *       r_B_j  = G * M_BH / u_j          (individual Bondi radius, physical)
- *       w_j    = m_j * |v_rad_j|           (mass-inflow-rate proxy weight)
- *   and accumulate the weighted sum.  The final weighted Bondi radius is
- *   formed in set_blackhole_mdot as BondiRadius_WeightedSum / Bondi_WeightSum.
- *
- *   Sign convention:
- *     dP[k] = P[j].Pos[k] - local.Pos[k]   (points FROM BH TO gas)
- *     dv[k] = P[j].Vel[k] - local.Vel[k]   (gas velocity relative to BH)
- *   => v_rad = dot(dv, dP) / (|dP| * cf_atime)
- *      v_rad < 0  means gas is moving toward the BH  (inflow)  */
-int blackhole_bondi_radius_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
-{
-    int startnode, numngb, listindex = 0, j, k, n;
-    struct INPUT_STRUCT_NAME  local;
-    struct OUTPUT_STRUCT_NAME out;
-    memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
- 
-    if(mode == 0) {INPUTFUNCTION_NAME(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];}
- 
-    if(local.R_search_code <= 0) {return 0;}
- 
-    if(mode == 0) {startnode = All.MaxPart;} else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;}
-    while(startnode >= 0)
+    int i, k, task, n_global_bh = 0, n_local_bh = N_active_loc_BHs;
+    int *counts = (int *) malloc(NTask * sizeof(int));
+    int *byte_counts = (int *) malloc(NTask * sizeof(int));
+    int *byte_offsets = (int *) malloc(NTask * sizeof(int));
+    if((counts == NULL) || (byte_counts == NULL) || (byte_offsets == NULL)) {endrun(8889);}
+
+    MPI_Allgather(&n_local_bh, 1, MPI_INT, counts, 1, MPI_INT, MPI_COMM_WORLD);
+    for(task = 0; task < NTask; task++)
     {
-        while(startnode >= 0)
-        {
-            numngb = ngb_treefind_pairs_threads_targeted(local.Pos, local.R_search_code, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, BH_NEIGHBOR_BITFLAG);
-            if(numngb < 0) {return -2;}
- 
-            for(n = 0; n < numngb; n++)
-            {
-                j = ngblist[n];
-                if((P[j].Mass <= 0) || (P[j].Type != 0)) {continue;}  /* gas only */
- 
-                double dP[3], dv[3];
-                for(k=0;k<3;k++) {dP[k]=P[j].Pos[k]-local.Pos[k]; dv[k]=P[j].Vel[k]-local.Vel[k];}
-                NEAREST_XYZ(dP[0],dP[1],dP[2],-1);
-                NGB_SHEARBOX_BOUNDARY_VELCORR_(local.Pos, P[j].Pos, dv, -1);
- 
-                double r2 = dP[0]*dP[0] + dP[1]*dP[1] + dP[2]*dP[2];
-                if(r2 <= 0) {continue;}
-                double r_dist = sqrt(r2);  /* comoving code units */
- 
-                /* Physical radial velocity: negative = inflowing toward BH */
-                double v_rad = (dv[0]*dP[0] + dv[1]*dP[1] + dv[2]*dP[2])
-                               / (r_dist * All.cf_atime);
-                if(v_rad >= 0) {continue;}  /* skip outflowing gas */
- 
-                double u_j = SphP[j].InternalEnergy;
-                if(u_j <= 0) {continue;}
- 
-                /* Individual Bondi radius for this particle: r_B = G*M_BH/u_j (physical) */
-                double r_bondi_j = All.G * local.BH_Mass / u_j;
- 
-                /* Weight = inward momentum: m_j * |v_rad|.
-                 * Weights each particle's Bondi radius by how hard it is
-                 * pushing inward, without the 1/r bias of a flux-based weight. */
-                double weight_j = P[j].Mass * fabs(v_rad);
- 
-                out.BondiRadius_WeightedSum += (MyFloat)(weight_j * r_bondi_j);
-                out.Bondi_WeightSum         += (MyFloat)(weight_j);
-            }
-        }
-        if(mode == 1) {listindex++; if(listindex < NODELISTLENGTH) {startnode = DATAGET_NAME[target].NodeList[listindex]; if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}}}
+        if(counts[task] < 0) {endrun(8890);}
+        byte_counts[task] = counts[task] * (int) sizeof(struct yuan18_active_bh_data);
+        byte_offsets[task] = n_global_bh * (int) sizeof(struct yuan18_active_bh_data);
+        n_global_bh += counts[task];
     }
-    if(mode == 0) {OUTPUTFUNCTION_NAME(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;}
-    return 0;
-}
- 
-void blackhole_bondi_radius_loop(void)
-{
-    int i, need_more_local, need_more_global;
-    double R_cap_phys = blackhole_yuan18_bondi_search_cap_phys();
-    for(i = 0; i < N_active_loc_BHs; i++)
+
+    if(n_global_bh <= 0)
+    {
+        free(byte_offsets); free(byte_counts); free(counts);
+        *bh_list_out = NULL;
+        return 0;
+    }
+
+    struct yuan18_active_bh_data *local_bhs =
+        (struct yuan18_active_bh_data *) malloc(DMAX(n_local_bh, 1) * sizeof(struct yuan18_active_bh_data));
+    struct yuan18_active_bh_data *all_bhs =
+        (struct yuan18_active_bh_data *) malloc(n_global_bh * sizeof(struct yuan18_active_bh_data));
+    if((local_bhs == NULL) || (all_bhs == NULL)) {endrun(8891);}
+
+    for(i = 0; i < n_local_bh; i++)
     {
         int n = BlackholeTempInfo[i].index;
-        double R_search_phys = DMIN(blackhole_yuan18_initial_bondi_search_radius_phys(n), R_cap_phys);
-        BlackholeTempInfo[i].Yuan18_Bondi_Search_Radius = R_search_phys;
-        BlackholeTempInfo[i].Yuan18_Bondi_Search_Done = (R_search_phys <= 0);
-        BlackholeTempInfo[i].BondiRadius_WeightedSum = 0;
-        BlackholeTempInfo[i].Bondi_WeightSum = 0;
+        for(k = 0; k < 3; k++) {local_bhs[i].Pos[k] = P[n].Pos[k]; local_bhs[i].Vel[k] = P[n].Vel[k];}
+        local_bhs[i].BH_Mass = BPP(n).BH_Mass;
+        if(BlackholeTempInfo[i].Bondi_WeightSum > 0)
+        {
+            local_bhs[i].R_flux_phys = BlackholeTempInfo[i].BondiRadius_WeightedSum / BlackholeTempInfo[i].Bondi_WeightSum;
+        } else {
+            local_bhs[i].R_flux_phys = BPP(n).Yuan18_BH_Bondi_Radius;
+        }
+        local_bhs[i].OwnerTask = ThisTask;
+        local_bhs[i].LocalIndex = i;
     }
 
-#include "../../system/code_block_xchange_perform_ops_malloc.h"
-    do
+    MPI_Allgatherv(local_bhs, n_local_bh * (int) sizeof(struct yuan18_active_bh_data), MPI_BYTE,
+                   all_bhs, byte_counts, byte_offsets, MPI_BYTE, MPI_COMM_WORLD);
+
+    free(local_bhs); free(byte_offsets); free(byte_counts); free(counts);
+    *bh_list_out = all_bhs;
+    return n_global_bh;
+}
+
+void blackhole_bondi_radius_loop(void)
+{
+    int b, j, k;
+    struct yuan18_active_bh_data *bh_list = NULL;
+    int n_global_bh = yuan18_gather_active_bh_list(&bh_list);
+    if(n_global_bh <= 0) {CPU_Step[CPU_BLACKHOLES] += measure_time(); return;}
+
+    double *local_sum = (double *) calloc(2 * n_global_bh, sizeof(double));
+    double *global_sum = (double *) calloc(2 * n_global_bh, sizeof(double));
+    if((local_sum == NULL) || (global_sum == NULL)) {endrun(8892);}
+
+    for(b = 0; b < n_global_bh; b++)
     {
-        need_more_local = 0;
-#include "../../system/code_block_xchange_perform_ops.h"
-        for(i = 0; i < N_active_loc_BHs; i++)
+        for(j = 0; j < N_gas; j++)
         {
-            if(BlackholeTempInfo[i].Yuan18_Bondi_Search_Done) {continue;}
-            if(BlackholeTempInfo[i].Bondi_WeightSum > 0 || BlackholeTempInfo[i].Yuan18_Bondi_Search_Radius >= R_cap_phys)
-            {
-                BlackholeTempInfo[i].Yuan18_Bondi_Search_Done = 1;
-            } else {
-                BlackholeTempInfo[i].Yuan18_Bondi_Search_Radius = DMIN(2.0 * BlackholeTempInfo[i].Yuan18_Bondi_Search_Radius, R_cap_phys);
-                BlackholeTempInfo[i].BondiRadius_WeightedSum = 0;
-                BlackholeTempInfo[i].Bondi_WeightSum = 0;
-                need_more_local = 1;
-            }
+            if((P[j].Mass <= 0) || (P[j].Type != 0)) {continue;}
+
+            double dP[3], dv[3];
+            for(k = 0; k < 3; k++) {dP[k] = P[j].Pos[k] - bh_list[b].Pos[k]; dv[k] = P[j].Vel[k] - bh_list[b].Vel[k];}
+            NEAREST_XYZ(dP[0], dP[1], dP[2], -1);
+            NGB_SHEARBOX_BOUNDARY_VELCORR_(bh_list[b].Pos, P[j].Pos, dv, -1);
+
+            double r2 = dP[0]*dP[0] + dP[1]*dP[1] + dP[2]*dP[2];
+            if(r2 <= 0) {continue;}
+
+            double r_dist = sqrt(r2);
+            double v_rad = (dv[0]*dP[0] + dv[1]*dP[1] + dv[2]*dP[2]) / (r_dist * All.cf_atime);
+            if(v_rad >= 0) {continue;}
+
+            double u_j = SphP[j].InternalEnergy;
+            if(u_j <= 0) {continue;}
+
+            double weight_j = P[j].Mass * fabs(v_rad);
+            local_sum[2*b]     += weight_j * All.G * bh_list[b].BH_Mass / u_j;
+            local_sum[2*b + 1] += weight_j;
         }
-        MPI_Allreduce(&need_more_local, &need_more_global, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-        loop_iteration++;
-    } while(need_more_global);
-#include "../../system/code_block_xchange_perform_ops_demalloc.h"
+    }
+
+    MPI_Allreduce(local_sum, global_sum, 2 * n_global_bh, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    for(b = 0; b < n_global_bh; b++)
+    {
+        if(bh_list[b].OwnerTask != ThisTask) {continue;}
+        int i = bh_list[b].LocalIndex;
+        BlackholeTempInfo[i].BondiRadius_WeightedSum = global_sum[2*b];
+        BlackholeTempInfo[i].Bondi_WeightSum = global_sum[2*b + 1];
+    }
+
+    free(global_sum); free(local_sum); free(bh_list);
     CPU_Step[CPU_BLACKHOLES] += measure_time();
 }
-#include "../../system/code_block_xchange_finalize.h"
  
 #endif /* BH_YUAN18_ACCRETION */
  
@@ -662,163 +588,123 @@ CPU_Step[CPU_BLACKHOLES] += measure_time(); /* collect timings and reset clock f
 
 
 /* -----------------------------------------------------------------------------------------------------
- * Mass flux loop for BH_YUAN18_ACCRETION: Dedicated loop to compute the mass flux at the weighted Bondi radius.
+ * Mass flux loop for BH_YUAN18_ACCRETION: compute the inward mass flux through the weighted Bondi sphere.
  * ----------------------------------------------------------------------------------------------------- */
 #ifdef BH_YUAN18_ACCRETION
 
-#define CORE_FUNCTION_NAME blackhole_mass_flux_evaluate 
-#define CONDITIONFUNCTION_FOR_EVALUATION if(bhsink_isactive(i)) 
-#include "../../system/code_block_xchange_initialize.h"
-
-struct INPUT_STRUCT_NAME
+static inline void yuan18_fibonacci_sphere_direction(int q, double *dir)
 {
-    int NodeList[NODELISTLENGTH]; MyDouble Pos[3]; MyFloat Vel[3]; 
-    MyFloat R_flux_phys; // Just the weighted Bondi radius.
-}
-*DATAIN_NAME, *DATAGET_NAME; 
-
-static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
-{
-    int k, j_tempinfo = P[i].IndexMapToTempStruc; 
-    for(k=0;k<3;k++) {in->Pos[k]=P[i].Pos[k]; in->Vel[k]=P[i].Vel[k];} 
-    
-    /* Read the weighted Bondi radius computed in blackhole_bondi_radius_loop.
-     * Fall back to the persisted previous-timestep value if this step found
-     * no inflowing gas (prevents mdot_bondi from being zeroed spuriously). */
-    if (BlackholeTempInfo[j_tempinfo].Bondi_WeightSum > 0) {
-        in->R_flux_phys = BlackholeTempInfo[j_tempinfo].BondiRadius_WeightedSum / BlackholeTempInfo[j_tempinfo].Bondi_WeightSum;
-    } else {
-        in->R_flux_phys = BPP(i).Yuan18_BH_Bondi_Radius; /* 0 on first step — fine, loop skips */
-    }
-}
-
-struct OUTPUT_STRUCT_NAME
-{
-    MyFloat yuan18_rho_p[YUAN18_N_FIB];  /* Σ_j m_j W: SPH density at each Fibonacci point [physical] */
-    MyFloat yuan18_vrad_p[YUAN18_N_FIB]; /* Σ_j (m_j/ρ_j) v_rad_j W: SPH v_rad at each Fibonacci point [physical] */
-    MyFloat debug_vrad_sum;  /* sum of yuan18_vrad_p[p] over inward Fibonacci points (debug) */
-    MyFloat debug_rho_sum;   /* sum of yuan18_rho_p[p]  over inward Fibonacci points (debug) */
-    MyFloat debug_n_inward;  /* count of Fibonacci points with yuan18_vrad_p[p] < 0 */
-}
-*DATARESULT_NAME, *DATAOUT_NAME;
-
-static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
-{
-    int target = P[i].IndexMapToTempStruc, p;
-    for(p = 0; p < YUAN18_N_FIB; p++) {
-        ASSIGN_ADD(BlackholeTempInfo[target].yuan18_rho_p[p],  out->yuan18_rho_p[p],  mode);
-        ASSIGN_ADD(BlackholeTempInfo[target].yuan18_vrad_p[p], out->yuan18_vrad_p[p], mode);
-    }
-    ASSIGN_ADD(BlackholeTempInfo[target].debug_vrad_sum, out->debug_vrad_sum, mode);
-    ASSIGN_ADD(BlackholeTempInfo[target].debug_rho_sum,  out->debug_rho_sum,  mode);
-    ASSIGN_ADD(BlackholeTempInfo[target].debug_n_inward, out->debug_n_inward, mode);
-}
-
-int blackhole_mass_flux_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration)
-{
-    int startnode, numngb_inbox, listindex = 0, j, n; struct INPUT_STRUCT_NAME local; struct OUTPUT_STRUCT_NAME out; memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
-    if(mode == 0) {INPUTFUNCTION_NAME(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];}
-
-    if(local.R_flux_phys <= 0) return 0; /* weighted Bondi radius unavailable; skip this BH */
-
-    int N_fib = YUAN18_N_FIB;
-    double phi_golden = M_PI * (3.0 - sqrt(5.0));
-
-    /* Pre-compute unit vectors for the Fibonacci points on the Bondi sphere */
-    double n_fib[YUAN18_N_FIB][3];
-    for(int p = 0; p < N_fib; p++) {
-        double y  = 1.0 - (p / (double)(N_fib - 1)) * 2.0;
-        double rc = sqrt(1.0 - y * y);
-        double th = phi_golden * p;
-        n_fib[p][0] = cos(th) * rc;
-        n_fib[p][1] = y;
-        n_fib[p][2] = sin(th) * rc;
-    }
-
-    /* SPH estimates at each Fibonacci sphere point (kernel h = h_j of each neighbor):
-     * rho_p[p]      = Σ_j m_j W(|r_p - r_j|, h_j)                       [physical density]
-     * vrad_num_p[p] = Σ_j (m_j/ρ_j) v_rad_j W(|r_p - r_j|, h_j)        [physical velocity]
-     * => v_rad(r_p) = vrad_num_p[p]   (standard SPH interpolant; NOT divided by rho) */
-    double rho_p[YUAN18_N_FIB], vrad_num_p[YUAN18_N_FIB];
-    memset(rho_p,      0, sizeof(rho_p));
-    memset(vrad_num_p, 0, sizeof(vrad_num_p));
-
-    /* Search radius: R_bondi + max kernel reach.  2*R_bondi is a safe upper bound
-     * assuming h_j < R_bondi for particles near the sphere. */
-    double search_radius = 2.0 * local.R_flux_phys / All.cf_atime;
-
-    if(mode == 0) {startnode = All.MaxPart;} else {startnode = DATAGET_NAME[target].NodeList[0]; startnode = Nodes[startnode].u.d.nextnode;}
-    while(startnode >= 0) {
-        while(startnode >= 0) {
-            numngb_inbox = ngb_treefind_pairs_threads_targeted(local.Pos, search_radius, target, &startnode, mode, exportflag, exportnodecount, exportindex, ngblist, BH_NEIGHBOR_BITFLAG);
-            if(numngb_inbox < 0) {return -2;}
-            for(n = 0; n < numngb_inbox; n++)
-            {
-                j = ngblist[n];
-                if((P[j].Mass <= 0) || (PPP[j].Hsml <= 0) || (P[j].Type != 0)) {continue;} /* gas only */
-
-                int k; double dP[3], dv[3];
-                for(k=0;k<3;k++) {dP[k]=P[j].Pos[k]-local.Pos[k]; dv[k]=P[j].Vel[k]-local.Vel[k];}
-                NEAREST_XYZ(dP[0],dP[1],dP[2],-1);
-                NGB_SHEARBOX_BOUNDARY_VELCORR_(local.Pos,P[j].Pos,dv,-1);
-
-                double r_j_phys[3], dv_phys[3];
-                for(k=0;k<3;k++) {r_j_phys[k] = dP[k] * All.cf_atime; dv_phys[k] = dv[k] / All.cf_atime;}
-
-                double h_j_phys = PPP[j].Hsml * All.cf_atime;
-                double hinv = 1.0 / h_j_phys, hinv3 = hinv*hinv*hinv, hinv4 = hinv*hinv3;
-                double rho_j_phys = SphP[j].Density * All.cf_a3inv;
-                double mj_over_rho_j = (rho_j_phys > 0) ? P[j].Mass / rho_j_phys : 0.0;
-
-                /* Bounding-sphere cull: skip particle j entirely if its kernel sphere
-                 * (radius h_j, centred at r_j) cannot reach the Bondi sphere surface.
-                 * Min distance from r_j to any point on sphere = ||r_j| - R_bondi|. */
-                double r_j_mag = sqrt(r_j_phys[0]*r_j_phys[0] + r_j_phys[1]*r_j_phys[1] + r_j_phys[2]*r_j_phys[2]);
-                if(fabs(r_j_mag - local.R_flux_phys) >= h_j_phys) {continue;}
-
-                for(int p = 0; p < N_fib; p++) {
-                    double dr[3];
-                    for(k=0;k<3;k++) dr[k] = n_fib[p][k] * local.R_flux_phys - r_j_phys[k];
-                    double dist2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
-                    if(dist2 >= h_j_phys * h_j_phys) {continue;}
-
-                    double wk, dwk;
-                    kernel_main(sqrt(dist2) * hinv, hinv3, hinv4, &wk, &dwk, -1);
-
-                    rho_p[p]      += P[j].Mass * wk;
-                    vrad_num_p[p] += mj_over_rho_j * (dv_phys[0]*n_fib[p][0] + dv_phys[1]*n_fib[p][1] + dv_phys[2]*n_fib[p][2]) * wk;
-                }
-            }
-        }
-        if(mode == 1) {listindex++; if(listindex < NODELISTLENGTH) {startnode = DATAGET_NAME[target].NodeList[listindex]; if(startnode >= 0) {startnode = Nodes[startnode].u.d.nextnode;}}}
-    }
-
-    /* Store rho_p and vrad_p (= Σ_j m_j/ρ_j * v_rad_j * W) per Fibonacci point.
-     * The product rho_p * vrad_p is NOT MPI-additive, so both arrays are accumulated
-     * separately; set_blackhole_mdot computes mass flux = rho_p * vrad_p * dA after
-     * full MPI reduction.  Also fill debug sums over inward points. */
-    for(int p = 0; p < N_fib; p++) {
-        out.yuan18_rho_p[p]  = (MyFloat) rho_p[p];
-        out.yuan18_vrad_p[p] = (MyFloat) vrad_num_p[p];
-        if(vrad_num_p[p] < 0) { /* inward Fibonacci point */
-            out.debug_vrad_sum  += vrad_num_p[p];
-            out.debug_rho_sum   += rho_p[p];
-            out.debug_n_inward  += 1.0f;
-        }
-    }
-
-    if(mode == 0) {OUTPUTFUNCTION_NAME(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target] = out;}
-    return 0;
+    double z = 1.0 - 2.0 * (((double)q + 0.5) / ((double)YUAN18_BONDI_FLUX_N_SAMPLES));
+    double phi = 2.0 * M_PI * ((double)q) * YUAN18_GOLDEN_RATIO_CONJUGATE;
+    double r_xy = sqrt(DMAX(0.0, 1.0 - z*z));
+    dir[0] = r_xy * cos(phi);
+    dir[1] = r_xy * sin(phi);
+    dir[2] = z;
 }
 
 void blackhole_mass_flux_loop(void)
 {
-#include "../../system/code_block_xchange_perform_ops_malloc.h" 
-#include "../../system/code_block_xchange_perform_ops.h" 
-#include "../../system/code_block_xchange_perform_ops_demalloc.h" 
-CPU_Step[CPU_BLACKHOLES] += measure_time(); 
+    int b, i, j, k, q;
+    for(i=0; i<N_active_loc_BHs; i++)
+    {
+        BlackholeTempInfo[i].Yuan18_Mdot_Flux = 0;
+        BlackholeTempInfo[i].Yuan18_Flux_WeightSum = 0;
+        for(q=0; q<YUAN18_BONDI_FLUX_N_SAMPLES; q++)
+        {
+            BlackholeTempInfo[i].Yuan18_Rho_Sample[q] = 0;
+            BlackholeTempInfo[i].Yuan18_Rhovr_Sample[q] = 0;
+            BlackholeTempInfo[i].Yuan18_Wt_Sample[q] = 0;
+        }
+    }
+
+    struct yuan18_active_bh_data *bh_list = NULL;
+    int n_global_bh = yuan18_gather_active_bh_list(&bh_list);
+    if(n_global_bh <= 0) {CPU_Step[CPU_BLACKHOLES] += measure_time(); return;}
+
+    int n_samples = YUAN18_BONDI_FLUX_N_SAMPLES;
+    int n_reduce = 3 * n_samples * n_global_bh;
+    double *local_sample = (double *) calloc(n_reduce, sizeof(double));
+    double *global_sample = (double *) calloc(n_reduce, sizeof(double));
+    if((local_sample == NULL) || (global_sample == NULL)) {endrun(8893);}
+
+#define YUAN18_SAMPLE_INDEX(bh_index, block, sample_index) (((bh_index) * 3 + (block)) * n_samples + (sample_index))
+
+    for(b = 0; b < n_global_bh; b++)
+    {
+        double R_flux_phys = bh_list[b].R_flux_phys;
+        if(R_flux_phys <= 0) {continue;}
+        double R_flux_code = R_flux_phys / All.cf_atime;
+        if(R_flux_code <= 0) {continue;}
+
+        for(j = 0; j < N_gas; j++)
+        {
+            if((P[j].Mass <= 0) || (P[j].Type != 0) || (PPP[j].Hsml <= 0)) {continue;}
+
+            double dP[3], dv[3];
+            for(k = 0; k < 3; k++) {dP[k] = P[j].Pos[k] - bh_list[b].Pos[k]; dv[k] = P[j].Vel[k] - bh_list[b].Vel[k];}
+            NEAREST_XYZ(dP[0], dP[1], dP[2], -1);
+            NGB_SHEARBOX_BOUNDARY_VELCORR_(bh_list[b].Pos, P[j].Pos, dv, -1);
+
+            double r_center = sqrt(dP[0]*dP[0] + dP[1]*dP[1] + dP[2]*dP[2]);
+            double H_j = PPP[j].Hsml;
+            if(fabs(r_center - R_flux_code) >= H_j) {continue;}
+
+            double hinv = 1.0 / H_j, hinv3 = hinv*hinv*hinv, hinv4 = hinv3*hinv;
+            for(q = 0; q < n_samples; q++)
+            {
+                double dir[3], dS[3], r2_sample = 0, wk = 0, dwk = 0;
+                yuan18_fibonacci_sphere_direction(q, dir);
+                for(k = 0; k < 3; k++)
+                {
+                    double sample_pos_k = bh_list[b].Pos[k] + R_flux_code * dir[k];
+                    dS[k] = P[j].Pos[k] - sample_pos_k;
+                }
+                NEAREST_XYZ(dS[0], dS[1], dS[2], -1);
+                for(k = 0; k < 3; k++) {r2_sample += dS[k]*dS[k];}
+                if(r2_sample >= H_j*H_j) {continue;}
+
+                kernel_main(sqrt(r2_sample) * hinv, hinv3, hinv4, &wk, &dwk, -1);
+                if(wk <= 0) {continue;}
+
+                double vr_phys = 0;
+                for(k = 0; k < 3; k++) {vr_phys += dv[k] * dir[k];}
+                vr_phys /= All.cf_atime;
+
+                local_sample[YUAN18_SAMPLE_INDEX(b, 0, q)] += P[j].Mass * wk;
+                local_sample[YUAN18_SAMPLE_INDEX(b, 1, q)] += P[j].Mass * wk * vr_phys;
+                local_sample[YUAN18_SAMPLE_INDEX(b, 2, q)] += wk;
+            }
+        }
+    }
+
+    MPI_Allreduce(local_sample, global_sample, n_reduce, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+    for(b = 0; b < n_global_bh; b++)
+    {
+        if(bh_list[b].OwnerTask != ThisTask) {continue;}
+        i = bh_list[b].LocalIndex;
+        double R_flux_phys = bh_list[b].R_flux_phys;
+        if(R_flux_phys <= 0) {continue;}
+
+        double sample_area = 4*M_PI * R_flux_phys * R_flux_phys / n_samples;
+        for(q = 0; q < n_samples; q++)
+        {
+            double rho_code = global_sample[YUAN18_SAMPLE_INDEX(b, 0, q)];
+            if(rho_code <= 0) {continue;}
+            double rho_q = rho_code * All.cf_a3inv;
+            double vr_q = global_sample[YUAN18_SAMPLE_INDEX(b, 1, q)] / rho_code;
+            BlackholeTempInfo[i].Yuan18_Mdot_Flux += sample_area * rho_q * DMAX(-vr_q, 0.0);
+            BlackholeTempInfo[i].Yuan18_Rho_Sample[q] = rho_code;
+            BlackholeTempInfo[i].Yuan18_Rhovr_Sample[q] = global_sample[YUAN18_SAMPLE_INDEX(b, 1, q)];
+            BlackholeTempInfo[i].Yuan18_Wt_Sample[q] = global_sample[YUAN18_SAMPLE_INDEX(b, 2, q)];
+            BlackholeTempInfo[i].Yuan18_Flux_WeightSum += BlackholeTempInfo[i].Yuan18_Wt_Sample[q];
+        }
+    }
+
+#undef YUAN18_SAMPLE_INDEX
+    free(global_sample); free(local_sample); free(bh_list);
+    CPU_Step[CPU_BLACKHOLES] += measure_time();
 }
-#include "../../system/code_block_xchange_finalize.h"
 
 #endif // BH_YUAN18_ACCRETION
 
