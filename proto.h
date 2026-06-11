@@ -684,8 +684,13 @@ char *GetMultiSpeciesFilename(int i, int hk);
 
 double bh_angleweight(double bh_lum_input, MyFloat bh_angle[3], double dx, double dy, double dz);
 double bh_angleweight_localcoupling(int j, double cos_theta, double r, double H_bh);
-#if defined(BH_YUAN18_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS)
+#if defined(BH_YUAN18_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
 double yuan18_wind_injection_radius_code(double r_inject_physical);
+#endif
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+void yuan18_wind_surface_direction(int q, double *dir);
+double yuan18_wind_angular_weight(double cos_theta, int mode_wind);
+double yuan18_wind_surface_assignment_weight(int j, double r_to_sample);
 #endif
 double yuan18_wind_shellweight_localcoupling(int j, double cos_theta, double r, double r_inject, int mode_wind);
 

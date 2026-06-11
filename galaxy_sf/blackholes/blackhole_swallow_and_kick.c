@@ -58,11 +58,17 @@ struct INPUT_STRUCT_NAME
     MyFloat Yuan18_v_wind;
     MyFloat Yuan18_eps_wind;
 #endif
-#ifdef BH_YUAN18_WIND_CONTINUOUS
+#ifdef BH_YUAN18_JET_CONTINUOUS
+    MyFloat Yuan18_mdot_jet;
+    MyFloat Yuan18_v_jet;
+    MyFloat Yuan18_eps_jet;
+#endif
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
     MyFloat Yuan18_mdot_wind;
     MyFloat Yuan18_wind_angle_weighted_kernel_sum;
     MyFloat Yuan18_wind_angle_weighted_kernel_sum_pos;
     MyFloat Yuan18_wind_angle_weighted_kernel_sum_neg;
+    MyFloat Yuan18_wind_surface_weight_sum[YUAN18_BONDI_FLUX_N_SAMPLES];
     MyFloat Yuan18_J_dir[3];
     MyFloat Yuan18_r_inject;
     int     Yuan18_mode_wind;
@@ -108,16 +114,109 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
     in->Yuan18_v_wind = BlackholeTempInfo[j_tempinfo].Yuan18_v_wind;
     in->Yuan18_eps_wind = BlackholeTempInfo[j_tempinfo].Yuan18_eps_wind;
 #endif
-#ifdef BH_YUAN18_WIND_CONTINUOUS
+#ifdef BH_YUAN18_JET_CONTINUOUS
+    in->Yuan18_mdot_jet = BlackholeTempInfo[j_tempinfo].Yuan18_mdot_jet;
+    in->Yuan18_v_jet = BlackholeTempInfo[j_tempinfo].Yuan18_v_jet;
+    in->Yuan18_eps_jet = BlackholeTempInfo[j_tempinfo].Yuan18_eps_jet;
+#endif
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
     in->Yuan18_mdot_wind = BlackholeTempInfo[j_tempinfo].Yuan18_mdot_wind;
     in->Yuan18_wind_angle_weighted_kernel_sum = BlackholeTempInfo[j_tempinfo].Yuan18_wind_angle_weighted_kernel_sum;
     in->Yuan18_wind_angle_weighted_kernel_sum_pos = BlackholeTempInfo[j_tempinfo].Yuan18_wind_angle_weighted_kernel_sum_pos;
     in->Yuan18_wind_angle_weighted_kernel_sum_neg = BlackholeTempInfo[j_tempinfo].Yuan18_wind_angle_weighted_kernel_sum_neg;
+    for(k=0;k<YUAN18_BONDI_FLUX_N_SAMPLES;k++) {in->Yuan18_wind_surface_weight_sum[k] = BlackholeTempInfo[j_tempinfo].Yuan18_wind_surface_weight_sum[k];}
     in->Yuan18_mode_wind = BlackholeTempInfo[j_tempinfo].Yuan18_mode_wind;
     in->Yuan18_r_inject = BlackholeTempInfo[j_tempinfo].Yuan18_r_inject;
     for(k=0;k<3;k++) {in->Yuan18_J_dir[k] = BlackholeTempInfo[j_tempinfo].Yuan18_J_dir[k];}
 #endif
 }
+
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+static inline void yuan18_compute_wind_surface_projection_to_gas(int j, double *bh_pos, double r_center,
+                                                                 double r_inject_code, double *axis, int mode_wind,
+                                                                 MyFloat *surface_weight_sum,
+                                                                 double angular_norm, double angular_norm_pos, double angular_norm_neg,
+                                                                 double *mass_weight, double *dir_weight)
+{
+    int q, k;
+    *mass_weight = 0;
+    for(k=0; k<3; k++) {dir_weight[k] = 0;}
+
+    if((P[j].Type != 0) || (P[j].Mass <= 0) || (SphP[j].Density <= 0) || (PPP[j].Hsml <= 0)) return;
+    if((r_inject_code <= 0) || (mode_wind <= 0) || (angular_norm <= 0) || (r_center < r_inject_code)) return;
+    if(fabs(r_center - r_inject_code) >= PPP[j].Hsml) return;
+
+    int use_side_norm = (angular_norm_pos > 0 && angular_norm_neg > 0);
+    for(q=0; q<YUAN18_BONDI_FLUX_N_SAMPLES; q++)
+    {
+        double denom_q = surface_weight_sum[q];
+        if(denom_q <= 0) {continue;}
+
+        double dir[3], cos_theta=0, d_sample[3], r2_sample=0;
+        yuan18_wind_surface_direction(q, dir);
+        for(k=0; k<3; k++) {cos_theta += dir[k] * axis[k];}
+        double angular_weight = yuan18_wind_angular_weight(cos_theta, mode_wind);
+        if(angular_weight <= 0) {continue;}
+
+        for(k=0; k<3; k++)
+        {
+            double sample_pos_k = bh_pos[k] + r_inject_code * dir[k];
+            d_sample[k] = P[j].Pos[k] - sample_pos_k;
+        }
+        NEAREST_XYZ(d_sample[0], d_sample[1], d_sample[2], -1);
+        for(k=0; k<3; k++) {r2_sample += d_sample[k] * d_sample[k];}
+        if(r2_sample >= PPP[j].Hsml * PPP[j].Hsml) {continue;}
+
+        double ownership_weight = yuan18_wind_surface_assignment_weight(j, sqrt(r2_sample));
+        if(ownership_weight <= 0) {continue;}
+
+        double sample_norm = angular_weight / angular_norm;
+        if(use_side_norm)
+        {
+            double side_norm = (cos_theta >= 0) ? angular_norm_pos : angular_norm_neg;
+            sample_norm = 0.5 * angular_weight / side_norm;
+        }
+        double wt = sample_norm * ownership_weight / denom_q;
+        if(wt <= 0) {continue;}
+
+        *mass_weight += wt;
+        for(k=0; k<3; k++) {dir_weight[k] += wt * dir[k];}
+    }
+}
+
+static inline void yuan18_add_continuous_outflow_to_gas(double m_outflow, double mdotdt_outflow,
+                                                        double v_outflow, double eps_outflow,
+                                                        double *dir_weight, MyFloat *bh_vel,
+                                                        double *Mass_j, double *Vel_j,
+                                                        double *InternalEnergy_j)
+{
+    if(m_outflow <= 0 || mdotdt_outflow <= 0 || *Mass_j <= 0) return;
+
+    int k;
+    double Mass_j_before = *Mass_j;
+    double Vel_j_before[3], outflow_momentum_code[3], e_total = Mass_j_before * (*InternalEnergy_j);
+    double mass_weight = m_outflow / mdotdt_outflow;
+    double v_bh_phys[3], v_bh2_phys = 0, v_bh_dot_dir_wt = 0;
+    for(k=0; k<3; k++)
+    {
+        Vel_j_before[k] = Vel_j[k];
+        outflow_momentum_code[k] = m_outflow * bh_vel[k] + mdotdt_outflow * All.cf_atime * v_outflow * dir_weight[k];
+        v_bh_phys[k] = bh_vel[k] / All.cf_atime;
+        v_bh2_phys += v_bh_phys[k] * v_bh_phys[k];
+        v_bh_dot_dir_wt += v_bh_phys[k] * dir_weight[k];
+        e_total += 0.5 * Mass_j_before * (Vel_j_before[k] / All.cf_atime) * (Vel_j_before[k] / All.cf_atime);
+    }
+    e_total += 0.5 * mdotdt_outflow * (mass_weight * v_bh2_phys + 2.0 * v_outflow * v_bh_dot_dir_wt + mass_weight * v_outflow * v_outflow);
+    e_total += m_outflow * eps_outflow;
+
+    *Mass_j += m_outflow;
+    for(k=0; k<3; k++) {Vel_j[k] = (Mass_j_before * Vel_j_before[k] + outflow_momentum_code[k]) / (*Mass_j);}
+    double e_kin_new = 0;
+    for(k=0; k<3; k++) {e_kin_new += 0.5 * (Vel_j[k] / All.cf_atime) * (Vel_j[k] / All.cf_atime);}
+    *InternalEnergy_j = e_total / (*Mass_j) - e_kin_new;
+    if(*InternalEnergy_j < 0) {*InternalEnergy_j = 0;}
+}
+#endif
 
 
 /* this structure defines the variables that need to be sent -back to- the 'searching' element */
@@ -217,12 +316,41 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
     double norm=0; for(k=0;k<3;k++) {norm+=J_dir[k]*J_dir[k];}
     if(norm>0) {norm=1/sqrt(norm); for(k=0;k<3;k++) {J_dir[k]*=norm;}} else {J_dir[0]=J_dir[1]=0; J_dir[2]=1;}
 #endif
-#ifdef BH_YUAN18_WIND_CONTINUOUS
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
     double Yuan18_J_dir[3]; for(k=0;k<3;k++) {Yuan18_J_dir[k] = local.Yuan18_J_dir[k];}
     double yuan18_norm=0; for(k=0;k<3;k++) {yuan18_norm += Yuan18_J_dir[k]*Yuan18_J_dir[k];}
     if(yuan18_norm>0) {yuan18_norm=1/sqrt(yuan18_norm); for(k=0;k<3;k++) {Yuan18_J_dir[k]*=yuan18_norm;}} else {Yuan18_J_dir[0]=Yuan18_J_dir[1]=0; Yuan18_J_dir[2]=1;}
-    int yuan18_continuous_wind_active = (local.Yuan18_mdot_wind > 0 && local.Yuan18_v_wind > 0 && local.Yuan18_wind_angle_weighted_kernel_sum > 0);
     double yuan18_r_inject_code = yuan18_wind_injection_radius_code(local.Yuan18_r_inject);
+#endif
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+    double yuan18_surface_angular_norm=0, yuan18_surface_angular_norm_pos=0, yuan18_surface_angular_norm_neg=0;
+    for(k=0; k<YUAN18_BONDI_FLUX_N_SAMPLES; k++)
+    {
+        if(local.Yuan18_wind_surface_weight_sum[k] <= 0) {continue;}
+        double dir_q[3], cos_theta_q=0;
+        yuan18_wind_surface_direction(k, dir_q);
+        int kk; for(kk=0; kk<3; kk++) {cos_theta_q += dir_q[kk] * Yuan18_J_dir[kk];}
+        double angular_weight_q = yuan18_wind_angular_weight(cos_theta_q, local.Yuan18_mode_wind);
+        if(angular_weight_q <= 0) {continue;}
+        yuan18_surface_angular_norm += angular_weight_q;
+        if(cos_theta_q >= 0) {yuan18_surface_angular_norm_pos += angular_weight_q;} else {yuan18_surface_angular_norm_neg += angular_weight_q;}
+    }
+    int yuan18_continuous_wind_active = (local.Yuan18_mdot_wind > 0 && local.Yuan18_v_wind > 0 && yuan18_surface_angular_norm > 0);
+#endif
+#ifdef BH_YUAN18_JET_CONTINUOUS
+    double yuan18_jet_surface_angular_norm=0, yuan18_jet_surface_angular_norm_pos=0, yuan18_jet_surface_angular_norm_neg=0;
+    for(k=0; k<YUAN18_BONDI_FLUX_N_SAMPLES; k++)
+    {
+        if(local.Yuan18_wind_surface_weight_sum[k] <= 0) {continue;}
+        double dir_q[3], cos_theta_q=0;
+        yuan18_wind_surface_direction(k, dir_q);
+        int kk; for(kk=0; kk<3; kk++) {cos_theta_q += dir_q[kk] * Yuan18_J_dir[kk];}
+        double angular_weight_q = yuan18_wind_angular_weight(cos_theta_q, 4);
+        if(angular_weight_q <= 0) {continue;}
+        yuan18_jet_surface_angular_norm += angular_weight_q;
+        if(cos_theta_q >= 0) {yuan18_jet_surface_angular_norm_pos += angular_weight_q;} else {yuan18_jet_surface_angular_norm_neg += angular_weight_q;}
+    }
+    int yuan18_continuous_jet_active = (local.Yuan18_mdot_jet > 0 && local.Yuan18_v_jet > 0 && yuan18_jet_surface_angular_norm > 0);
 #endif
 #if defined(BH_WIND_KICK)
     double bh_mass_withdisk=local.BH_Mass;
@@ -236,8 +364,15 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 
     /* Now start the actual neighbor computation for this particle */
     double ngb_search_radius = h_i;
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+    int yuan18_continuous_outflow_active = 0;
 #ifdef BH_YUAN18_WIND_CONTINUOUS
-    if(yuan18_r_inject_code > 0 && local.Yuan18_mode_wind > 0)
+    if(yuan18_continuous_wind_active) {yuan18_continuous_outflow_active = 1;}
+#endif
+#ifdef BH_YUAN18_JET_CONTINUOUS
+    if(yuan18_continuous_jet_active) {yuan18_continuous_outflow_active = 1;}
+#endif
+    if(yuan18_r_inject_code > 0 && yuan18_continuous_outflow_active)
     {
         double yuan18_shell_search_buffer = DMAX(h_i, Extnodes[All.MaxPart].hmax);
         ngb_search_radius = DMAX(ngb_search_radius, yuan18_r_inject_code + yuan18_shell_search_buffer);
@@ -271,12 +406,18 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
                 NEAREST_XYZ(dpos[0],dpos[1],dpos[2],-1); /*  find the closest image in the given box size  */
                 NGB_SHEARBOX_BOUNDARY_VELCORR_(local.Pos,P[j].Pos,dvel,-1); /* wrap velocities for shearing boxes if needed */
                 double r2=0; for(k=0;k<3;k++) {r2+=dpos[k]*dpos[k];}
-#ifdef BH_YUAN18_WIND_CONTINUOUS
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
                 double heff_j = DMAX( PPP[j].Hsml , ForceSoftening_KernelRadius(j) );
                 int bh_local_candidate = (r2 < h_i*h_i || r2 < heff_j*heff_j);
                 double r_for_shell = sqrt(r2);
-                int yuan18_shell_candidate = ((P[j].Type == 0) && (yuan18_r_inject_code > 0) && (PPP[j].Hsml > 0) && (fabs(r_for_shell - yuan18_r_inject_code) < PPP[j].Hsml));
-                int yuan18_wind_coupling_candidate = (yuan18_continuous_wind_active && yuan18_shell_candidate);
+                int yuan18_shell_candidate = ((P[j].Type == 0) && (yuan18_r_inject_code > 0) && (PPP[j].Hsml > 0) && (r_for_shell >= yuan18_r_inject_code) && (fabs(r_for_shell - yuan18_r_inject_code) < PPP[j].Hsml));
+                int yuan18_wind_coupling_candidate = 0, yuan18_jet_coupling_candidate = 0;
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+                yuan18_wind_coupling_candidate = (yuan18_continuous_wind_active && yuan18_shell_candidate);
+#endif
+#ifdef BH_YUAN18_JET_CONTINUOUS
+                yuan18_jet_coupling_candidate = (yuan18_continuous_jet_active && yuan18_shell_candidate);
+#endif
                 if(!bh_local_candidate && !yuan18_shell_candidate && P[j].SwallowID != local.ID) {continue;}
 #endif
 
@@ -284,7 +425,7 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 #if defined(BH_RETURN_ANGMOM_TO_GAS) || defined(BH_RETURN_BFLUX)
                 double wk, dwk, u=0;
                 if(P[j].Type == 0
-#ifdef BH_YUAN18_WIND_CONTINUOUS
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
                    && bh_local_candidate
 #endif
                    ){
@@ -294,7 +435,7 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 #endif
 #if defined(BH_RETURN_ANGMOM_TO_GAS) /* this should go here [right before the loop that accretes it back onto the BH] */
                 if(P[j].Type == 0
-#ifdef BH_YUAN18_WIND_CONTINUOUS
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
                    && bh_local_candidate
 #endif
                    )
@@ -310,7 +451,7 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 #endif
 #if defined(BH_RETURN_BFLUX) // do a kernel-weighted redistribution of the magnetic flux in the sink into surrounding particles
                 if((P[j].Type == 0) && (local.kernel_norm_topass_in_swallowloop > 0)
-#ifdef BH_YUAN18_WIND_CONTINUOUS
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
                    && bh_local_candidate
 #endif
                    ){
@@ -511,26 +652,33 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
                 
                 
 #if defined(BH_CALC_LOCAL_ANGLEWEIGHTS)
-                /* now, do any other feedback "kick" operations (which used the previous loops to calculate weights) */
+	                /* now, do any other feedback "kick" operations (which used the previous loops to calculate weights) */
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+	                int yuan18_surface_coupling_candidate = 0;
 #ifdef BH_YUAN18_WIND_CONTINUOUS
-                if(((mom > 0 && bh_local_candidate) || yuan18_wind_coupling_candidate) && local.Dt>0 && OriginallyMarkedSwallowID==0 && P[j].SwallowID==0 && Mass_j>0 && P[j].Type==0) // particles NOT being swallowed!
+	                if(yuan18_wind_coupling_candidate) {yuan18_surface_coupling_candidate = 1;}
+#endif
+#ifdef BH_YUAN18_JET_CONTINUOUS
+	                if(yuan18_jet_coupling_candidate) {yuan18_surface_coupling_candidate = 1;}
+#endif
+	                if(((mom > 0 && bh_local_candidate) || yuan18_surface_coupling_candidate) && local.Dt>0 && OriginallyMarkedSwallowID==0 && P[j].SwallowID==0 && Mass_j>0 && P[j].Type==0) // particles NOT being swallowed!
 #else
-                if(mom>0 && local.Dt>0 && OriginallyMarkedSwallowID==0 && P[j].SwallowID==0 && Mass_j>0 && P[j].Type==0) // particles NOT being swallowed!
+	                if(mom>0 && local.Dt>0 && OriginallyMarkedSwallowID==0 && P[j].SwallowID==0 && Mass_j>0 && P[j].Type==0) // particles NOT being swallowed!
 #endif
                 {
                     double r=0, dir[3]; for(k=0;k<3;k++) {dir[k]=dpos[k]; r+=dir[k]*dir[k];} // should be away from BH
                     if(r>0)
-                    {
-                        r=sqrt(r); for(k=0;k<3;k++) {dir[k]/=r;} /* cos_theta with respect to disk of BH is given by dot product of r and Jgas */
-#ifdef BH_YUAN18_WIND_CONTINUOUS
-                        if(bh_local_candidate)
-                        {
+	                    {
+	                        r=sqrt(r); for(k=0;k<3;k++) {dir[k]/=r;} /* cos_theta with respect to disk of BH is given by dot product of r and Jgas */
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+	                        if(bh_local_candidate)
+	                        {
 #endif
-                        for(norm=0,k=0;k<3;k++) {norm+=dir[k]*J_dir[k];}
-                        mom_wt = bh_angleweight_localcoupling(j,norm,r,h_i) / local.BH_angle_weighted_kernel_sum;
-                        if(local.BH_angle_weighted_kernel_sum<=0) {mom_wt=0;}
-#ifdef BH_YUAN18_WIND_CONTINUOUS
-                        } else {mom_wt=0;}
+	                        for(norm=0,k=0;k<3;k++) {norm+=dir[k]*J_dir[k];}
+	                        mom_wt = bh_angleweight_localcoupling(j,norm,r,h_i) / local.BH_angle_weighted_kernel_sum;
+	                        if(local.BH_angle_weighted_kernel_sum<=0) {mom_wt=0;}
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+	                        } else {mom_wt=0;}
 #endif
 
 #ifdef BH_PHOTONMOMENTUM /* inject radiation pressure: add initial L/c optical/UV coupling to the gas at the dust sublimation radius */
@@ -541,10 +689,9 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
                         double dEcr = (evaluate_blackhole_cosmicray_efficiency(local.Mdot,local.BH_Mass,-1)) * mom_wt * C_LIGHT_CODE*C_LIGHT_CODE * local.Mdot*local.Dt;
                         inject_cosmic_rays(dEcr,All.BAL_v_outflow,5,j,dir);
 #endif
-#if defined(BH_WIND_CONTINUOUS) && !defined(BH_WIND_KICK) /* inject BAL winds, this is the more standard smooth feedback model */
-#ifndef BH_YUAN18_WIND_CONTINUOUS
-                        double m_wind = mom_wt * (1-All.BAL_f_accretion)/(All.BAL_f_accretion) * local.Mdot*local.Dt; /* mass to couple */
-                        if(local.BH_angle_weighted_kernel_sum<=0) {m_wind=0;}
+#if defined(BH_WIND_CONTINUOUS) && !defined(BH_WIND_KICK) && !defined(BH_YUAN18_WIND_CONTINUOUS) /* inject BAL winds, this is the more standard smooth feedback model */
+	                        double m_wind = mom_wt * (1-All.BAL_f_accretion)/(All.BAL_f_accretion) * local.Mdot*local.Dt; /* mass to couple */
+	                        if(local.BH_angle_weighted_kernel_sum<=0) {m_wind=0;}
                         //1. check if (Vw-V0)*rhat <= 0   [ equivalently, check if   |Vw| <= V0*rhat ]
                         //2. if (1) is False, the wind will catch the particle, couple mass, momentum, energy, according to the equations above
                         //3. if (1) is True, the wind will not catch the particle, or will only asymptotically catch it. For the sake of mass conservation in the disk, I think it is easiest to treat this like the 'marginal' case where the wind barely catches the particle. In this case, add the mass normally, but no momentum, and no energy, giving:
@@ -568,62 +715,68 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
                             }
                             e_wind *= 0.5*m_wind/Mass_j; // make total wind energy, add to particle as specific energy of -particle-
                             InternalEnergy_j += e_wind;
-                        } else {    // gas moving away from BH at wind speed (or faster) already.
-                            if(InternalEnergy_j * ( Mass_j - m_wind ) / Mass_j > 0) {InternalEnergy_j = InternalEnergy_j * ( Mass_j - m_wind ) / Mass_j;}
-                        }
-#else
-                        if(yuan18_wind_coupling_candidate)
-                        {
-                            double yuan18_wind_wt = 0;
-                            if(local.Yuan18_wind_angle_weighted_kernel_sum>0 && local.Yuan18_mdot_wind>0 && local.Yuan18_v_wind>0)
-                            {
-                                double yuan18_cos_theta=0; for(k=0;k<3;k++) {yuan18_cos_theta += dir[k]*Yuan18_J_dir[k];}
-                                double yuan18_shell_wt = yuan18_wind_shellweight_localcoupling(j,yuan18_cos_theta,r,yuan18_r_inject_code,local.Yuan18_mode_wind);
-                                yuan18_wind_wt = yuan18_shell_wt / local.Yuan18_wind_angle_weighted_kernel_sum;
-                                if(local.Yuan18_wind_angle_weighted_kernel_sum_pos > 0 && local.Yuan18_wind_angle_weighted_kernel_sum_neg > 0)
-                                {
-                                    double yuan18_side_sum = (yuan18_cos_theta >= 0) ? local.Yuan18_wind_angle_weighted_kernel_sum_pos : local.Yuan18_wind_angle_weighted_kernel_sum_neg;
-                                    yuan18_wind_wt = 0.5 * yuan18_shell_wt / yuan18_side_sum;
-                                }
-                            }
-                            double m_wind = yuan18_wind_wt * local.Yuan18_mdot_wind * local.Dt; /* Yuan18 wind mass to couple */
-                            if(m_wind > 0 && Mass_j > 0)
-                            {
-                                double Mass_j_before_wind = Mass_j;
-                                double Vel_j_before_wind[3], wind_vel_code[3], e_total = Mass_j_before_wind * InternalEnergy_j;
-                                for(k=0;k<3;k++)
-                                {
-                                    Vel_j_before_wind[k] = Vel_j[k];
-                                    wind_vel_code[k] = local.Vel[k] + All.cf_atime * local.Yuan18_v_wind * dir[k];
-                                    e_total += 0.5 * Mass_j_before_wind * (Vel_j_before_wind[k]/All.cf_atime) * (Vel_j_before_wind[k]/All.cf_atime);
-                                    e_total += 0.5 * m_wind * (wind_vel_code[k]/All.cf_atime) * (wind_vel_code[k]/All.cf_atime);
-                                }
-                                e_total += m_wind * local.Yuan18_eps_wind;
-                                Mass_j += m_wind;
-                                for(k=0;k<3;k++) {Vel_j[k] = (Mass_j_before_wind * Vel_j_before_wind[k] + m_wind * wind_vel_code[k]) / Mass_j;}
-                                double e_kin_new = 0;
-                                for(k=0;k<3;k++) {e_kin_new += 0.5 * (Vel_j[k]/All.cf_atime) * (Vel_j[k]/All.cf_atime);}
-                                InternalEnergy_j = e_total / Mass_j - e_kin_new;
-                                if(InternalEnergy_j < 0) {InternalEnergy_j = 0;}
+	                        } else {    // gas moving away from BH at wind speed (or faster) already.
+	                            if(InternalEnergy_j * ( Mass_j - m_wind ) / Mass_j > 0) {InternalEnergy_j = InternalEnergy_j * ( Mass_j - m_wind ) / Mass_j;}
+	                        }
+#endif
 #ifdef BH_YUAN18_WIND_CONTINUOUS
-                                #pragma omp atomic
-                                SphP[j].Yuan18WindMass += m_wind;
-                                #pragma omp atomic
+	                        if(yuan18_wind_coupling_candidate)
+	                        {
+	                            double yuan18_wind_wt = 0, yuan18_dir_wt[3];
+                            yuan18_compute_wind_surface_projection_to_gas(j, local.Pos, r, yuan18_r_inject_code, Yuan18_J_dir,
+	                                                                          local.Yuan18_mode_wind, local.Yuan18_wind_surface_weight_sum,
+	                                                                          yuan18_surface_angular_norm, yuan18_surface_angular_norm_pos,
+	                                                                          yuan18_surface_angular_norm_neg, &yuan18_wind_wt, yuan18_dir_wt);
+	                            double mdotdt_yuan18 = local.Yuan18_mdot_wind * local.Dt;
+	                            double m_wind = yuan18_wind_wt * local.Yuan18_mdot_wind * local.Dt; /* Yuan18 wind mass to couple */
+	                            if(m_wind > 0 && Mass_j > 0)
+	                            {
+	                                yuan18_add_continuous_outflow_to_gas(m_wind, mdotdt_yuan18, local.Yuan18_v_wind, local.Yuan18_eps_wind,
+	                                                                      yuan18_dir_wt, local.Vel, &Mass_j, Vel_j, &InternalEnergy_j);
+	                                #pragma omp atomic
+	                                SphP[j].Yuan18WindMass += m_wind;
+	                                #pragma omp atomic
                                 SphP[j].Yuan18WindEnergy += m_wind * (local.Yuan18_eps_wind + 0.5 * local.Yuan18_v_wind * local.Yuan18_v_wind);
                                 for(k=0;k<3;k++)
                                 {
                                     #pragma omp atomic
-                                    SphP[j].Yuan18WindMomentum[k] += m_wind * local.Yuan18_v_wind * dir[k];
-                                }
-                                #pragma omp atomic write
-                                SphP[j].Yuan18WindLastMode = local.Yuan18_mode_wind;
+                                    SphP[j].Yuan18WindMomentum[k] += mdotdt_yuan18 * local.Yuan18_v_wind * yuan18_dir_wt[k];
+	                                }
+	                                #pragma omp atomic write
+	                                SphP[j].Yuan18WindLastMode = local.Yuan18_mode_wind;
+	                            }
+	                        }
 #endif
-                            }
-                        }
+#ifdef BH_YUAN18_JET_CONTINUOUS
+	                        if(yuan18_jet_coupling_candidate)
+	                        {
+	                            double yuan18_jet_wt = 0, yuan18_jet_dir_wt[3];
+	                            yuan18_compute_wind_surface_projection_to_gas(j, local.Pos, r, yuan18_r_inject_code, Yuan18_J_dir,
+	                                                                          4, local.Yuan18_wind_surface_weight_sum,
+	                                                                          yuan18_jet_surface_angular_norm, yuan18_jet_surface_angular_norm_pos,
+	                                                                          yuan18_jet_surface_angular_norm_neg, &yuan18_jet_wt, yuan18_jet_dir_wt);
+	                            double mdotdt_yuan18_jet = local.Yuan18_mdot_jet * local.Dt;
+	                            double m_jet = yuan18_jet_wt * local.Yuan18_mdot_jet * local.Dt; /* Yuan18 jet mass to couple */
+	                            if(m_jet > 0 && Mass_j > 0)
+	                            {
+	                                yuan18_add_continuous_outflow_to_gas(m_jet, mdotdt_yuan18_jet, local.Yuan18_v_jet, local.Yuan18_eps_jet,
+	                                                                      yuan18_jet_dir_wt, local.Vel, &Mass_j, Vel_j, &InternalEnergy_j);
+	                                #pragma omp atomic
+	                                SphP[j].Yuan18JetMass += m_jet;
+	                                #pragma omp atomic
+	                                SphP[j].Yuan18JetEnergy += m_jet * (local.Yuan18_eps_jet + 0.5 * local.Yuan18_v_jet * local.Yuan18_v_jet);
+	                                for(k=0;k<3;k++)
+	                                {
+	                                    #pragma omp atomic
+	                                    SphP[j].Yuan18JetMomentum[k] += mdotdt_yuan18_jet * local.Yuan18_v_jet * yuan18_jet_dir_wt[k];
+	                                }
+	                                #pragma omp atomic write
+	                                SphP[j].Yuan18JetLastMode = 4;
+	                            }
+	                        }
 #endif
-#endif // if defined(BH_WIND_CONTINUOUS) && !defined(BH_WIND_KICK)
-                    } // r > 0
-                } // (check if valid gas neighbor of interest)
+	                    } // r > 0
+	                } // (check if valid gas neighbor of interest)
 #endif // defined(BH_CALC_LOCAL_ANGLEWEIGHTS)
                 
                 /* ok, now deal with coupling back terms to the actual neighbor 'j'. to do this we need to be careful to ensure thread-safety */

@@ -27,10 +27,15 @@ struct INPUT_STRUCT_NAME
 #if defined(BH_CALC_LOCAL_ANGLEWEIGHTS)
     MyFloat Jgas_in_Kernel[3];
 #endif
-#ifdef BH_YUAN18_WIND_CONTINUOUS
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
     MyFloat Yuan18_J_dir[3];
     MyFloat Yuan18_r_inject;
     int     Yuan18_mode_wind;
+#endif
+#ifdef BH_YUAN18_JET_CONTINUOUS
+    MyFloat Yuan18_mdot_jet;
+    MyFloat Yuan18_v_jet;
+    MyFloat Yuan18_eps_jet;
 #endif
 #if defined(BH_GRAVCAPTURE_GAS)
     MyFloat mass_to_swallow_edd;
@@ -85,10 +90,15 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
     for(k=0;k<3;k++) {in->Jgas_in_Kernel[k] = BlackholeTempInfo[j_tempinfo].Jgas_in_Kernel[k];}
 #endif
 #endif
-#ifdef BH_YUAN18_WIND_CONTINUOUS
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
     for(k=0;k<3;k++) {in->Yuan18_J_dir[k] = BlackholeTempInfo[j_tempinfo].Yuan18_J_dir[k];}
     in->Yuan18_r_inject = BlackholeTempInfo[j_tempinfo].Yuan18_r_inject;
     in->Yuan18_mode_wind = BlackholeTempInfo[j_tempinfo].Yuan18_mode_wind;
+#endif
+#ifdef BH_YUAN18_JET_CONTINUOUS
+    in->Yuan18_mdot_jet = BlackholeTempInfo[j_tempinfo].Yuan18_mdot_jet;
+    in->Yuan18_v_jet = BlackholeTempInfo[j_tempinfo].Yuan18_v_jet;
+    in->Yuan18_eps_jet = BlackholeTempInfo[j_tempinfo].Yuan18_eps_jet;
 #endif
 #if defined(BH_GRAVCAPTURE_GAS)
     in->mass_to_swallow_edd = BlackholeTempInfo[j_tempinfo].mass_to_swallow_edd;
@@ -107,10 +117,11 @@ struct OUTPUT_STRUCT_NAME
 { /* define variables below as e.g. "double X;" */
 #if defined(BH_CALC_LOCAL_ANGLEWEIGHTS)
     double BH_angle_weighted_kernel_sum;
-#ifdef BH_YUAN18_WIND_CONTINUOUS
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
     double Yuan18_wind_angle_weighted_kernel_sum;
     double Yuan18_wind_angle_weighted_kernel_sum_pos;
     double Yuan18_wind_angle_weighted_kernel_sum_neg;
+    double Yuan18_wind_surface_weight_sum[YUAN18_BONDI_FLUX_N_SAMPLES];
 #endif
 #endif
 #ifdef BH_REPOSITION_ON_POTMIN
@@ -126,10 +137,11 @@ static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, in
     int k, target; k=0; target = P[i].IndexMapToTempStruc;
 #if defined(BH_CALC_LOCAL_ANGLEWEIGHTS)
     ASSIGN_ADD_PRESET(BlackholeTempInfo[target].BH_angle_weighted_kernel_sum, out->BH_angle_weighted_kernel_sum, mode);
-#ifdef BH_YUAN18_WIND_CONTINUOUS
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
     ASSIGN_ADD_PRESET(BlackholeTempInfo[target].Yuan18_wind_angle_weighted_kernel_sum, out->Yuan18_wind_angle_weighted_kernel_sum, mode);
     ASSIGN_ADD_PRESET(BlackholeTempInfo[target].Yuan18_wind_angle_weighted_kernel_sum_pos, out->Yuan18_wind_angle_weighted_kernel_sum_pos, mode);
     ASSIGN_ADD_PRESET(BlackholeTempInfo[target].Yuan18_wind_angle_weighted_kernel_sum_neg, out->Yuan18_wind_angle_weighted_kernel_sum_neg, mode);
+    for(k=0;k<YUAN18_BONDI_FLUX_N_SAMPLES;k++) {ASSIGN_ADD_PRESET(BlackholeTempInfo[target].Yuan18_wind_surface_weight_sum[k], out->Yuan18_wind_surface_weight_sum[k], mode);}
 #endif
 #endif
 #ifdef BH_REPOSITION_ON_POTMIN
@@ -137,6 +149,48 @@ static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, in
         } else {if(out->BH_MinPot < BPP(i).BH_MinPot) {BPP(i).BH_MinPot=out->BH_MinPot; for(k=0;k<3;k++) {BPP(i).BH_MinPotPos[k]=out->BH_MinPotPos[k];}}}
 #endif
 }
+
+
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+static inline void yuan18_add_wind_surface_denominator(struct OUTPUT_STRUCT_NAME *out, int j, double *bh_pos,
+                                                       double r_center, double r_inject_code,
+                                                       double *axis, int mode_wind)
+{
+    if((P[j].Type != 0) || (P[j].Mass <= 0) || (SphP[j].Density <= 0) || (PPP[j].Hsml <= 0)) return;
+    if((r_inject_code <= 0) || (mode_wind <= 0) || (r_center < r_inject_code)) return;
+    if(fabs(r_center - r_inject_code) >= PPP[j].Hsml) return;
+
+    int q, k;
+    for(q=0; q<YUAN18_BONDI_FLUX_N_SAMPLES; q++)
+    {
+        double dir[3], cos_theta=0, d_sample[3], r2_sample=0;
+        yuan18_wind_surface_direction(q, dir);
+        for(k=0; k<3; k++) {cos_theta += dir[k] * axis[k];}
+        double angular_weight = yuan18_wind_angular_weight(cos_theta, mode_wind);
+        if(angular_weight <= 0) {continue;}
+
+        for(k=0; k<3; k++)
+        {
+            double sample_pos_k = bh_pos[k] + r_inject_code * dir[k];
+            d_sample[k] = P[j].Pos[k] - sample_pos_k;
+        }
+        NEAREST_XYZ(d_sample[0], d_sample[1], d_sample[2], -1);
+        for(k=0; k<3; k++) {r2_sample += d_sample[k] * d_sample[k];}
+        if(r2_sample >= PPP[j].Hsml * PPP[j].Hsml) {continue;}
+
+        double ownership_weight = yuan18_wind_surface_assignment_weight(j, sqrt(r2_sample));
+        if(ownership_weight <= 0) {continue;}
+
+        out->Yuan18_wind_surface_weight_sum[q] += ownership_weight;
+        if(mode_wind != 4)
+        {
+            out->Yuan18_wind_angle_weighted_kernel_sum += angular_weight * ownership_weight;
+            if(cos_theta >= 0) {out->Yuan18_wind_angle_weighted_kernel_sum_pos += angular_weight * ownership_weight;}
+            else {out->Yuan18_wind_angle_weighted_kernel_sum_neg += angular_weight * ownership_weight;}
+        }
+    }
+}
+#endif
 
 
 
@@ -176,7 +230,7 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
     double norm=0; for(k=0;k<3;k++) {norm+=J_dir[k]*J_dir[k];}
     if(norm>0) {norm=1/sqrt(norm); for(k=0;k<3;k++) {J_dir[k]*=norm;}} else {J_dir[0]=J_dir[1]=0; J_dir[2]=1;}
 #endif
-#ifdef BH_YUAN18_WIND_CONTINUOUS
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
     double Yuan18_J_dir[3]; for(k=0;k<3;k++) {Yuan18_J_dir[k] = local.Yuan18_J_dir[k];}
     double yuan18_norm=0; for(k=0;k<3;k++) {yuan18_norm += Yuan18_J_dir[k]*Yuan18_J_dir[k];}
     if(yuan18_norm>0) {yuan18_norm=1/sqrt(yuan18_norm); for(k=0;k<3;k++) {Yuan18_J_dir[k]*=yuan18_norm;}} else {Yuan18_J_dir[0]=Yuan18_J_dir[1]=0; Yuan18_J_dir[2]=1;}
@@ -187,8 +241,15 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
 #endif
     /* Now start the actual neighbor computation for this particle */
     double ngb_search_radius = h_i;
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+    int yuan18_surface_feedback_active = 0;
 #ifdef BH_YUAN18_WIND_CONTINUOUS
-    if(yuan18_r_inject_code > 0 && local.Yuan18_mode_wind > 0)
+    if(local.Yuan18_mode_wind > 0) {yuan18_surface_feedback_active = 1;}
+#endif
+#ifdef BH_YUAN18_JET_CONTINUOUS
+    if(local.Yuan18_mdot_jet > 0 && local.Yuan18_v_jet > 0) {yuan18_surface_feedback_active = 1;}
+#endif
+    if(yuan18_r_inject_code > 0 && yuan18_surface_feedback_active)
     {
         double yuan18_shell_search_buffer = DMAX(h_i, Extnodes[All.MaxPart].hmax);
         ngb_search_radius = DMAX(ngb_search_radius, yuan18_r_inject_code + yuan18_shell_search_buffer);
@@ -211,20 +272,24 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
                     double heff_j = DMAX( PPP[j].Hsml , ForceSoftening_KernelRadius(j) );
                     int bh_local_candidate = (r2 < h_i2 || r2 < heff_j*heff_j);
                     int yuan18_shell_candidate = 0;
-#ifdef BH_YUAN18_WIND_CONTINUOUS
-                    if((P[j].Type == 0) && (yuan18_r_inject_code > 0) && (PPP[j].Hsml > 0) && (fabs(r - yuan18_r_inject_code) < PPP[j].Hsml)) {yuan18_shell_candidate = 1;}
-                    if(yuan18_shell_candidate && !bh_local_candidate && local.Dt>0 && r>0 && P[j].Mass>0)
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+                    if((P[j].Type == 0) && (yuan18_r_inject_code > 0) && (PPP[j].Hsml > 0) && (r >= yuan18_r_inject_code) && (fabs(r - yuan18_r_inject_code) < PPP[j].Hsml)) {yuan18_shell_candidate = 1;}
+                    if(yuan18_shell_candidate && local.Dt>0 && r>0 && P[j].Mass>0)
                     {
                         MyIDType SwallowID_j_shell;
                         #pragma omp atomic read
                         SwallowID_j_shell = P[j].SwallowID;
                         if(SwallowID_j_shell == 0)
                         {
-                            double yuan18_cos_theta=0; for(k=0;k<3;k++) {yuan18_cos_theta += (dpos[k]/r)*Yuan18_J_dir[k];}
-                            double yuan18_shell_wt = yuan18_wind_shellweight_localcoupling(j,yuan18_cos_theta,r,yuan18_r_inject_code,local.Yuan18_mode_wind);
-                            out.Yuan18_wind_angle_weighted_kernel_sum += yuan18_shell_wt;
-                            if(yuan18_cos_theta >= 0) {out.Yuan18_wind_angle_weighted_kernel_sum_pos += yuan18_shell_wt;}
-                            else {out.Yuan18_wind_angle_weighted_kernel_sum_neg += yuan18_shell_wt;}
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+                            yuan18_add_wind_surface_denominator(&out, j, local.Pos, r, yuan18_r_inject_code, Yuan18_J_dir, local.Yuan18_mode_wind);
+#endif
+#ifdef BH_YUAN18_JET_CONTINUOUS
+                            if(local.Yuan18_mdot_jet > 0 && local.Yuan18_v_jet > 0)
+                            {
+                                yuan18_add_wind_surface_denominator(&out, j, local.Pos, r, yuan18_r_inject_code, Yuan18_J_dir, 4);
+                            }
+#endif
                         }
                     }
 #endif
@@ -415,13 +480,6 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
                             { /* cos_theta with respect to disk of BH is given by dot product of r and Jgas */
                                 norm=0; for(k=0;k<3;k++) {norm+=(dpos[k]/r)*J_dir[k];}
                                 out.BH_angle_weighted_kernel_sum += bh_angleweight_localcoupling(j,norm,r,h_i);
-#ifdef BH_YUAN18_WIND_CONTINUOUS
-                                double yuan18_cos_theta=0; for(k=0;k<3;k++) {yuan18_cos_theta += (dpos[k]/r)*Yuan18_J_dir[k];}
-                                double yuan18_shell_wt = yuan18_wind_shellweight_localcoupling(j,yuan18_cos_theta,r,yuan18_r_inject_code,local.Yuan18_mode_wind);
-                                out.Yuan18_wind_angle_weighted_kernel_sum += yuan18_shell_wt;
-                                if(yuan18_cos_theta >= 0) {out.Yuan18_wind_angle_weighted_kernel_sum_pos += yuan18_shell_wt;}
-                                else {out.Yuan18_wind_angle_weighted_kernel_sum_neg += yuan18_shell_wt;}
-#endif
                             }
 #endif
 #ifdef BH_THERMALFEEDBACK

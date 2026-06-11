@@ -441,8 +441,8 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #if defined(BH_YUAN18_WIND_CONTINUOUS) && !defined(BH_YUAN18_ACCRETION)
 #error "BH_YUAN18_WIND_CONTINUOUS requires BH_YUAN18_ACCRETION (mode determination, mdot_wind, v_wind, r_tr all come from the Yuan18 accretion pipeline)."
 #endif
-#if defined(BH_YUAN18_WIND_CONTINUOUS) && !defined(BH_WIND_CONTINUOUS)
-#error "BH_YUAN18_WIND_CONTINUOUS requires BH_WIND_CONTINUOUS: it reuses the continuous wind coupling loop on the Yuan18 injection surface."
+#if defined(BH_YUAN18_JET_CONTINUOUS) && !defined(BH_YUAN18_ACCRETION)
+#error "BH_YUAN18_JET_CONTINUOUS requires BH_YUAN18_ACCRETION (hot-mode mdot_bh, r_inject, and launch-axis state come from the Yuan18 accretion pipeline)."
 #endif
 #if defined(BH_YUAN18_SPAWN) && defined(BH_YUAN18_WIND_CONTINUOUS)
 #error "BH_YUAN18_SPAWN and BH_YUAN18_WIND_CONTINUOUS are mutually exclusive: choose the spawn or continuous Yuan18 wind implementation."
@@ -1735,7 +1735,7 @@ extern double TimeBin_BH_mass[TIMEBINS];
 extern double TimeBin_BH_dynamicalmass[TIMEBINS];
 extern double TimeBin_BH_Mdot[TIMEBINS];
 extern double TimeBin_BH_Medd[TIMEBINS];
-#if defined(BH_PHOTONMOMENTUM) || defined(BH_WIND_CONTINUOUS) || defined(RT_BH_ANGLEWEIGHT_PHOTON_INJECTION)
+#if defined(BH_PHOTONMOMENTUM) || defined(BH_WIND_CONTINUOUS) || defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS) || defined(RT_BH_ANGLEWEIGHT_PHOTON_INJECTION)
 #define BH_CALC_LOCAL_ANGLEWEIGHTS
 #endif
 #if defined(BH_GRAVCAPTURE_GAS) || defined(BH_GRAVACCRETION) || defined(BH_GRAVCAPTURE_NONGAS) || defined(BH_CALC_LOCAL_ANGLEWEIGHTS) || defined(BH_DYNFRICTION) || defined(BH_EXCISION_NONGAS)
@@ -3107,11 +3107,17 @@ extern struct gas_cell_data
 #if defined(BH_THERMALFEEDBACK)
     MyDouble Injected_BH_Energy;
 #endif
-#ifdef BH_YUAN18_WIND_CONTINUOUS
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
     MyDouble Yuan18WindMass;          /*!< cumulative Yuan18 continuous wind mass coupled to this gas cell */
     MyDouble Yuan18WindEnergy;        /*!< cumulative Yuan18 continuous wind material energy coupled to this gas cell */
     MyDouble Yuan18WindMomentum[3];   /*!< cumulative Yuan18 continuous wind material momentum coupled to this gas cell */
     int      Yuan18WindLastMode;      /*!< latest Yuan18 continuous wind mode coupled to this gas cell */
+#endif
+#ifdef BH_YUAN18_JET_CONTINUOUS
+    MyDouble Yuan18JetMass;           /*!< cumulative Yuan18 continuous jet mass coupled to this gas cell */
+    MyDouble Yuan18JetEnergy;         /*!< cumulative Yuan18 continuous jet material energy coupled to this gas cell */
+    MyDouble Yuan18JetMomentum[3];    /*!< cumulative Yuan18 continuous jet material momentum coupled to this gas cell */
+    int      Yuan18JetLastMode;       /*!< latest Yuan18 continuous jet mode coupled to this gas cell */
 #endif
 
 #ifdef COOLING
@@ -3660,6 +3666,10 @@ enum iofields
   IO_YUAN18_WIND_ENERGY,
   IO_YUAN18_WIND_MOMENTUM,
   IO_YUAN18_WIND_LASTMODE,
+  IO_YUAN18_JET_MASS,
+  IO_YUAN18_JET_ENERGY,
+  IO_YUAN18_JET_MOMENTUM,
+  IO_YUAN18_JET_LASTMODE,
   IO_CRATE,
   IO_HRATE,
   IO_NHRATE,

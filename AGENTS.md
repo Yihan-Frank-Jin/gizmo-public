@@ -167,6 +167,7 @@ Current Yuan18 wind implementation decisions and deferred work:
 - A physical Yuan18/MACER travel-time outflow buffer (`time + x1min / v_wind`) is still planned but intentionally deferred. The current spawn reservoir is a mass-accumulation mechanism, not the final travel-time queue.
 - Splitting the wind reservoir by mode/arrival event is still planned but intentionally deferred. The current implementation can mix HOT/SUB/SUP material in one reservoir if the mode changes before a spawn event.
 - Yuan18/MACER wind metallicity and tracer fields are still planned but intentionally deferred. The current implementation does not yet assign `z_wind`-based composition or hot/cold wind tracer equivalents.
+- Continuous Yuan18 wind/jet feedback has an unresolved energy-partition question when multiple injection-surface samples couple to one gas cell: momentum is deposited using the net direction vector, while retaining the scalar kinetic energy of all contributing directions effectively thermalizes unresolved angular cancellation. This is likely negligible when the surface is well resolved, but should be revisited for low-resolution runs or if continuous feedback becomes the production path.
 
 Yuan18 wind mode convention:
 

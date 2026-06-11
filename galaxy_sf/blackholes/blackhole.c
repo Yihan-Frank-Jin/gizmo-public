@@ -196,7 +196,7 @@ double bh_angleweight_localcoupling(int j, double cos_theta, double r, double H_
 }
 
 
-#if defined(BH_YUAN18_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS)
+#if defined(BH_YUAN18_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
 double yuan18_wind_injection_radius_code(double r_inject_physical)
 {
     if(r_inject_physical <= 0 || All.cf_atime <= 0) return 0;
@@ -204,7 +204,76 @@ double yuan18_wind_injection_radius_code(double r_inject_physical)
 }
 #endif
 
-#if defined(BH_YUAN18_WIND_CONTINUOUS)
+#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+void yuan18_wind_surface_direction(int q, double *dir)
+{
+    int n_samples = YUAN18_BONDI_FLUX_N_SAMPLES;
+    int n_pairs = n_samples / 2;
+    if(n_pairs < 1) {n_pairs = 1;}
+    int q_pair = q;
+    int flip = 0;
+    if(q_pair >= n_pairs)
+    {
+        q_pair -= n_pairs;
+        flip = 1;
+    }
+    if(q_pair >= n_pairs) {q_pair = n_pairs - 1;}
+
+    double z = 1.0 - (((double)q_pair + 0.5) / (double)n_pairs);
+    double phi = 2.0 * M_PI * ((double)q_pair) * YUAN18_GOLDEN_RATIO_CONJUGATE;
+    double r_xy = sqrt(DMAX(0.0, 1.0 - z*z));
+    dir[0] = r_xy * cos(phi);
+    dir[1] = r_xy * sin(phi);
+    dir[2] = z;
+    if(flip)
+    {
+        dir[0] = -dir[0];
+        dir[1] = -dir[1];
+        dir[2] = -dir[2];
+    }
+}
+
+double yuan18_wind_angular_weight(double cos_theta, int mode_wind)
+{
+    if(mode_wind <= 0) return 0;
+    double mu = fabs(cos_theta);
+    if(mode_wind == 1) /* HOT: biconical shell at 30-70 degrees from the wind axis */
+    {
+        if(mu < YUAN18_COS_ANG2_HOT || mu > YUAN18_COS_ANG1_HOT) return 0;
+        return 1.0;
+    }
+    if(mode_wind == 2) /* SUB: all-sky cos^2(theta) weighting */
+    {
+        return mu * mu;
+    }
+    if(mode_wind == 3) /* SUP: polar caps within 30 degrees */
+    {
+        if(mu < YUAN18_COS_ANG_SUP) return 0;
+        return 1.0;
+    }
+    if(mode_wind == 4) /* JET: yuan18.cpp AGNJetFlag default bipolar caps within 10 degrees */
+    {
+        if(mu < YUAN18_COS_ANG_JET) return 0;
+        return 1.0;
+    }
+    return 0;
+}
+
+double yuan18_wind_surface_assignment_weight(int j, double r_to_sample)
+{
+    if((P[j].Mass <= 0) || (SphP[j].Density <= 0) || (PPP[j].Hsml <= 0)) return 0;
+    if((r_to_sample < 0) || (r_to_sample >= PPP[j].Hsml)) return 0;
+
+    double hinv = 1.0 / PPP[j].Hsml;
+    double hinv3 = hinv * hinv * hinv;
+    double hinv4 = hinv3 * hinv;
+    double wk = 0, dwk = 0;
+    kernel_main(r_to_sample * hinv, hinv3, hinv4, &wk, &dwk, -1);
+    if((wk <= 0) || isnan(wk)) return 0;
+
+    return (P[j].Mass / SphP[j].Density) * wk;
+}
+
 double yuan18_wind_shellweight_localcoupling(int j, double cos_theta, double r, double r_inject, int mode_wind)
 {
     if(r <= 0 || r_inject <= 0 || mode_wind <= 0) return 0;
@@ -733,7 +802,7 @@ void set_blackhole_mdot(int i, int n, double dt)
     BlackholeTempInfo[i].Yuan18_mdot_wind  = DMAX(mdot_wind, 0.0);
     BlackholeTempInfo[i].Yuan18_mode_wind  = mode_wind;
     BlackholeTempInfo[i].Yuan18_r_inject   = r_inject;
-#if defined(BH_YUAN18_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS)
+#if defined(BH_YUAN18_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
     /* normalized Yuan18 wind axis: fixed z-axis for debug, otherwise use the persistent
        BH/accretion-disk angular-momentum proxy only. Do not fall back to the surrounding
        gas angular momentum: the wind symmetry axis is a BH/disk property here. */
@@ -765,6 +834,11 @@ void set_blackhole_mdot(int i, int n, double dt)
     BPP(n).Yuan18_BH_mode_wind = mode_wind;
     for(int kk=0; kk<3; kk++) {BPP(n).Yuan18_BH_J_dir[kk] = BlackholeTempInfo[i].Yuan18_J_dir[kk];}
 #endif
+#endif
+#ifdef BH_YUAN18_JET_CONTINUOUS
+    BlackholeTempInfo[i].Yuan18_mdot_jet = DMAX(mdot_jet, 0.0);
+    BlackholeTempInfo[i].Yuan18_v_jet = v_jet;
+    BlackholeTempInfo[i].Yuan18_eps_jet = eps_jet;
 #endif
     double mdot_norm = (mdot_edd_yuan18 > 0) ? mdot_bh / mdot_edd_yuan18 : 0.0;
     BlackholeTempInfo[i].Yuan18_L_rad = GetRadEfficiency(mdot_norm) * mdot_bh * C_LIGHT_CODE * C_LIGHT_CODE;
@@ -821,7 +895,7 @@ void set_blackhole_new_mass(int i, int n, double dt)
     BPP(n).BH_AccretionDeficit += dMBH_continuous_accretion; // this is mass continuously accreted, which needs to be stochastically 'caught up to'
 #endif
 
-#if defined(BH_YUAN18_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS)
+#if defined(BH_YUAN18_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
     /* Yuan18 solves mdot_bh and mdot_wind separately. BH_Mass has already grown by mdot_bh*dt above;
        add the wind portion only to the stochastic gas-swallow deficit so gas around the BH loses the full
        mdot_bondi*dt = (mdot_bh + mdot_wind)*dt represented by the inflow. */

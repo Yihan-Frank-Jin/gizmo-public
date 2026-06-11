@@ -437,6 +437,51 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                 }
 #endif
             break;
+
+        case IO_YUAN18_JET_MASS:
+#ifdef BH_YUAN18_JET_CONTINUOUS
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) SphP[pindex].Yuan18JetMass;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_YUAN18_JET_ENERGY:
+#ifdef BH_YUAN18_JET_CONTINUOUS
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) SphP[pindex].Yuan18JetEnergy;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_YUAN18_JET_MOMENTUM:
+#ifdef BH_YUAN18_JET_CONTINUOUS
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    for(k=0;k<3;k++) {fp[k] = (MyOutputFloat) SphP[pindex].Yuan18JetMomentum[k];}
+                    fp += 3;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_YUAN18_JET_LASTMODE:
+#ifdef BH_YUAN18_JET_CONTINUOUS
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *ip_int++ = SphP[pindex].Yuan18JetLastMode;
+                    n++;
+                }
+#endif
+            break;
             
         case IO_CRATE:
 #if defined(OUTPUT_COOLRATE_DETAIL) && defined(COOLING)
@@ -1879,6 +1924,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_OHMIC:
         case IO_INIB:
         case IO_YUAN18_WIND_MOMENTUM:
+        case IO_YUAN18_JET_MOMENTUM:
         case IO_GRADPHI:
         case IO_GRADRHO:
         case IO_RAD_ACCEL:
@@ -1902,6 +1948,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_EOSCOMP:
         case IO_STAGE_PROTOSTAR:
         case IO_YUAN18_WIND_LASTMODE:
+        case IO_YUAN18_JET_LASTMODE:
             bytes_per_blockelement = sizeof(int);
             break;
             
@@ -1921,6 +1968,8 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_UNSPMASS:
         case IO_YUAN18_WIND_MASS:
         case IO_YUAN18_WIND_ENERGY:
+        case IO_YUAN18_JET_MASS:
+        case IO_YUAN18_JET_ENERGY:
         case IO_CRATE:
         case IO_HRATE:
         case IO_NHRATE:
@@ -2189,6 +2238,7 @@ int get_datatype_in_block(enum iofields blocknr)
         case IO_EOSCOMP:
         case IO_STAGE_PROTOSTAR:
         case IO_YUAN18_WIND_LASTMODE:
+        case IO_YUAN18_JET_LASTMODE:
             typekey = 0;		/* native int */
             break;
             
@@ -2220,6 +2270,7 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_VORT:
         case IO_BH_ANGMOM:
         case IO_YUAN18_WIND_MOMENTUM:
+        case IO_YUAN18_JET_MOMENTUM:
         case IO_ANNIHILATION_RADIATION:
             values = 3;
             break;
@@ -2243,6 +2294,9 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_YUAN18_WIND_MASS:
         case IO_YUAN18_WIND_ENERGY:
         case IO_YUAN18_WIND_LASTMODE:
+        case IO_YUAN18_JET_MASS:
+        case IO_YUAN18_JET_ENERGY:
+        case IO_YUAN18_JET_LASTMODE:
         case IO_CRATE:
         case IO_HRATE:
         case IO_NHRATE:
@@ -2527,6 +2581,10 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_YUAN18_WIND_ENERGY:
         case IO_YUAN18_WIND_MOMENTUM:
         case IO_YUAN18_WIND_LASTMODE:
+        case IO_YUAN18_JET_MASS:
+        case IO_YUAN18_JET_ENERGY:
+        case IO_YUAN18_JET_MOMENTUM:
+        case IO_YUAN18_JET_LASTMODE:
         case IO_CRATE:
         case IO_HRATE:
         case IO_NHRATE:
@@ -2902,6 +2960,15 @@ int blockpresent(enum iofields blocknr)
         case IO_YUAN18_WIND_MOMENTUM:
         case IO_YUAN18_WIND_LASTMODE:
 #ifdef BH_YUAN18_WIND_CONTINUOUS
+            return 1;
+#endif
+            break;
+
+        case IO_YUAN18_JET_MASS:
+        case IO_YUAN18_JET_ENERGY:
+        case IO_YUAN18_JET_MOMENTUM:
+        case IO_YUAN18_JET_LASTMODE:
+#ifdef BH_YUAN18_JET_CONTINUOUS
             return 1;
 #endif
             break;
@@ -3394,6 +3461,18 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_YUAN18_WIND_LASTMODE:
             strncpy(label, "Y18L", 4);
             break;
+        case IO_YUAN18_JET_MASS:
+            strncpy(label, "J18M", 4);
+            break;
+        case IO_YUAN18_JET_ENERGY:
+            strncpy(label, "J18E", 4);
+            break;
+        case IO_YUAN18_JET_MOMENTUM:
+            strncpy(label, "J18P", 4);
+            break;
+        case IO_YUAN18_JET_LASTMODE:
+            strncpy(label, "J18L", 4);
+            break;
         case IO_CRATE:
             strncpy(label, "CRATE", 4);
             break;
@@ -3845,6 +3924,18 @@ void get_dataset_name(enum iofields blocknr, char *buf)
             break;
         case IO_YUAN18_WIND_LASTMODE:
             strcpy(buf, "Yuan18WindLastMode");
+            break;
+        case IO_YUAN18_JET_MASS:
+            strcpy(buf, "Yuan18JetMass");
+            break;
+        case IO_YUAN18_JET_ENERGY:
+            strcpy(buf, "Yuan18JetEnergy");
+            break;
+        case IO_YUAN18_JET_MOMENTUM:
+            strcpy(buf, "Yuan18JetMomentum");
+            break;
+        case IO_YUAN18_JET_LASTMODE:
+            strcpy(buf, "Yuan18JetLastMode");
             break;
         case IO_CRATE:
             strcpy(buf, "CoolingRate");

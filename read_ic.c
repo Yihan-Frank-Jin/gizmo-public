@@ -575,6 +575,30 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
              for(n = 0; n < pc; n++) {SphP[offset + n].Yuan18WindLastMode = *ip_int++;}
 #endif
             break;
+
+        case IO_YUAN18_JET_MASS:
+#ifdef BH_YUAN18_JET_CONTINUOUS
+             for(n = 0; n < pc; n++) {SphP[offset + n].Yuan18JetMass = *fp++;}
+#endif
+            break;
+
+        case IO_YUAN18_JET_ENERGY:
+#ifdef BH_YUAN18_JET_CONTINUOUS
+             for(n = 0; n < pc; n++) {SphP[offset + n].Yuan18JetEnergy = *fp++;}
+#endif
+            break;
+
+        case IO_YUAN18_JET_MOMENTUM:
+#ifdef BH_YUAN18_JET_CONTINUOUS
+             for(n = 0; n < pc; n++) {for(k=0;k<3;k++) {SphP[offset + n].Yuan18JetMomentum[k] = *fp++;}}
+#endif
+            break;
+
+        case IO_YUAN18_JET_LASTMODE:
+#ifdef BH_YUAN18_JET_CONTINUOUS
+             for(n = 0; n < pc; n++) {SphP[offset + n].Yuan18JetLastMode = *ip_int++;}
+#endif
+            break;
             
         case IO_IDEN:
 #if defined(BH_WIND_SPAWN_SET_BFIELD_POLTOR) && defined(BH_DEBUG_SPAWN_JET_TEST)
