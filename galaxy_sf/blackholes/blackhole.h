@@ -98,16 +98,16 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
     MyFloat Yuan18_eps_wind;
     MyFloat Yuan18_f_accreted;           /* mdot_bh / mdot_bondi; used by BH_WIND_KICK path */
     MyFloat Yuan18_mdot_wind;            /* mdot_bondi - mdot_bh (>= 0) */
-#ifdef BH_YUAN18_JET_CONTINUOUS
+#ifdef BH_YUAN18_JET_SPAWN
     MyFloat Yuan18_mdot_jet;             /* hot-mode jet mass flux: 0.5 * mdot_bh in yuan18.cpp */
     MyFloat Yuan18_v_jet;                /* hot-mode jet speed: 0.3c in yuan18.cpp */
     MyFloat Yuan18_eps_jet;              /* hot-mode jet specific thermal energy: zero in yuan18.cpp */
 #endif
     int     Yuan18_mode_wind;            /* matches yuan18.cpp OutflowMode: 0=NONE, 1=HOT, 2=SUB, 3=SUP, 4=JET */
     MyFloat Yuan18_L_rad;                /* eps_rad * mdot_bh * c^2 [code energy/time] */
-    MyFloat Yuan18_r_inject;            /* injection/coupling surface (physical): currently R_bondi for hot/cold/super modes */
+    MyFloat Yuan18_r_inject;            /* injection/coupling surface (physical): weighted Bondi radius for all Yuan18 wind modes */
     MyFloat Yuan18_J_dir[3];             /* normalized Yuan18 wind axis for feedback coupling */
-#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+#ifdef BH_YUAN18_WIND_CONTINUOUS
     MyFloat Yuan18_wind_angle_weighted_kernel_sum; /* diagnostic Yuan18 wind surface coverage normalization */
     MyFloat Yuan18_wind_angle_weighted_kernel_sum_pos; /* diagnostic positive Yuan18-axis hemisphere coverage */
     MyFloat Yuan18_wind_angle_weighted_kernel_sum_neg; /* diagnostic negative Yuan18-axis hemisphere coverage */
@@ -116,6 +116,22 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
 #endif
 }
 *BlackholeTempInfo;
+
+
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+static inline int yuan18_continuous_wind_recipient_is_eligible(int j)
+{
+    if((P[j].Type != 0) || (P[j].Mass <= 0) || (SphP[j].Density <= 0) || (PPP[j].Hsml <= 0)) return 0;
+#ifdef BH_YUAN18_JET_SPAWN
+    if(P[j].ID == All.AGNWindID) return 0;
+#endif
+    if((SphP[j].Yuan18WindMass != 0) || (SphP[j].Yuan18WindLastMode != 0)) return 0;
+
+    /* TODO(Yuan18): permanent exclusion is temporary. Revisit when recycled or well-mixed wind gas
+       should become eligible for continuous wind injection again. */
+    return 1;
+}
+#endif
 
 
 /* blackhole_utils.c */
@@ -143,19 +159,25 @@ void blackhole_mass_flux_loop(void);
 /* blackhole_swallow_and_kick.c */
 void blackhole_swallow_and_kick_loop(void);
 double target_mass_for_wind_spawning(int i);
-#if defined(BH_YUAN18_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+#if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS)
 /* Yuan18 angular cone constants -- match yuan18.cpp InnerX1() defaults */
 #define YUAN18_COS_ANG1_HOT 0.8660  /* cos(30 deg): outer (largest |cos theta|) bound of HOT biconical shell */
 #define YUAN18_COS_ANG2_HOT 0.3420  /* cos(70 deg): inner (smallest |cos theta|) bound of HOT biconical shell */
 #define YUAN18_COS_ANG_SUP  0.8660  /* cos(30 deg): inner (smallest |cos theta|) bound of SUP polar caps */
 #define YUAN18_COS_ANG_JET 0.984807753012208 /* cos(10 deg): yuan18.cpp default jet polar cap */
 #endif
-#ifdef BH_YUAN18_SPAWN
+#if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
 void get_wind_spawn_direction_yuan18(int i, int num_spawned_this_call, int n_particles_split, int mode_wind,
                                      double *ny, double *nz,
                                      double *veldir, double *dpdir);
+#endif
+#ifdef BH_YUAN18_JET_SPAWN
+int spawn_bh_yuan18_feedback(double *mass_spawned_out);
+int blackhole_yuan18_spawn_particle_jet_shell(int i, int num_already_spawned);
+#endif
+#ifdef BH_YUAN18_WIND_SPAWN
 int spawn_bh_yuan18_wind_feedback(double *mass_spawned_out);
-int  blackhole_yuan18_spawn_particle_wind_shell(int i, int num_already_spawned);
+int blackhole_yuan18_spawn_particle_wind_shell(int i, int num_already_spawned);
 #endif
 
 /* blackhole_feed.c */

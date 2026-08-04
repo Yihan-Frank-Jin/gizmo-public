@@ -37,6 +37,21 @@
 void blackhole_accretion(void)
 {
     if(All.TimeStep == 0.) return; /* no evolution */
+#ifdef BH_YUAN18_JET_SPAWN
+    /* Jet packets are strictly local to one active BH feedback timestep. Clear
+       stale state before any active BH is processed, including after restarts. */
+    int i_jet_reset;
+    for(i_jet_reset = 0; i_jet_reset < NumPart; i_jet_reset++)
+      if(P[i_jet_reset].Type == 5)
+        {
+          BPP(i_jet_reset).Yuan18_BH_jet_step_mass = 0;
+          BPP(i_jet_reset).Yuan18_BH_jet_step_v_jet = 0;
+          BPP(i_jet_reset).Yuan18_BH_jet_step_eps_jet = 0;
+          BPP(i_jet_reset).Yuan18_BH_jet_step_J_dir[0] = 0;
+          BPP(i_jet_reset).Yuan18_BH_jet_step_J_dir[1] = 0;
+          BPP(i_jet_reset).Yuan18_BH_jet_step_J_dir[2] = 0;
+        }
+#endif
     PRINT_STATUS("Black-hole operations begin...");
 #if defined(BH_EXCISION_NONGAS) || defined(BH_GRAVCAPTURE_NONGAS)
     long i; for(i = 0; i < NumPart; i++) {P[i].SwallowID = 0;} /* zero out accretion */ // This zero-out loop is effectively performed in density.c now, only on -gas- particles that are actually going to be looked at this timestep, to reduce overhead when only a few particles are active. But it still needs to be done for non-gas particles.
@@ -196,7 +211,7 @@ double bh_angleweight_localcoupling(int j, double cos_theta, double r, double H_
 }
 
 
-#if defined(BH_YUAN18_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+#if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS)
 double yuan18_wind_injection_radius_code(double r_inject_physical)
 {
     if(r_inject_physical <= 0 || All.cf_atime <= 0) return 0;
@@ -204,7 +219,7 @@ double yuan18_wind_injection_radius_code(double r_inject_physical)
 }
 #endif
 
-#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+#ifdef BH_YUAN18_WIND_CONTINUOUS
 void yuan18_wind_surface_direction(int q, double *dir)
 {
     int n_samples = YUAN18_BONDI_FLUX_N_SAMPLES;
@@ -802,7 +817,7 @@ void set_blackhole_mdot(int i, int n, double dt)
     BlackholeTempInfo[i].Yuan18_mdot_wind  = DMAX(mdot_wind, 0.0);
     BlackholeTempInfo[i].Yuan18_mode_wind  = mode_wind;
     BlackholeTempInfo[i].Yuan18_r_inject   = r_inject;
-#if defined(BH_YUAN18_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+#if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS)
     /* normalized Yuan18 wind axis: fixed z-axis for debug, otherwise use the persistent
        BH/accretion-disk angular-momentum proxy only. Do not fall back to the surrounding
        gas angular momentum: the wind symmetry axis is a BH/disk property here. */
@@ -826,19 +841,23 @@ void set_blackhole_mdot(int i, int n, double dt)
         for(int kk=0; kk<3; kk++) {BlackholeTempInfo[i].Yuan18_J_dir[kk] = 0.0;}
     }
 #endif
-#ifdef BH_YUAN18_SPAWN
-    /* persist wind quantities to the BH particle so blackhole_spawn_particle_wind_shell can read them by P-index (BlackholeTempInfo is keyed by active-BH ordering, not P-index) */
-    BPP(n).Yuan18_BH_v_wind    = v_wind;
-    BPP(n).Yuan18_BH_eps_wind  = eps_wind;
+#if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
     BPP(n).Yuan18_BH_r_inject  = r_inject;
-    BPP(n).Yuan18_BH_mode_wind = mode_wind;
     for(int kk=0; kk<3; kk++) {BPP(n).Yuan18_BH_J_dir[kk] = BlackholeTempInfo[i].Yuan18_J_dir[kk];}
 #endif
+#ifdef BH_YUAN18_WIND_SPAWN
+    BPP(n).Yuan18_BH_v_wind    = v_wind;
+    BPP(n).Yuan18_BH_eps_wind  = eps_wind;
+    BPP(n).Yuan18_BH_mode_wind = mode_wind;
 #endif
-#ifdef BH_YUAN18_JET_CONTINUOUS
+#endif
+#ifdef BH_YUAN18_JET_SPAWN
     BlackholeTempInfo[i].Yuan18_mdot_jet = DMAX(mdot_jet, 0.0);
     BlackholeTempInfo[i].Yuan18_v_jet = v_jet;
     BlackholeTempInfo[i].Yuan18_eps_jet = eps_jet;
+    BPP(n).Yuan18_BH_mdot_jet = BlackholeTempInfo[i].Yuan18_mdot_jet;
+    BPP(n).Yuan18_BH_v_jet = v_jet;
+    BPP(n).Yuan18_BH_eps_jet = eps_jet;
 #endif
     double mdot_norm = (mdot_edd_yuan18 > 0) ? mdot_bh / mdot_edd_yuan18 : 0.0;
     BlackholeTempInfo[i].Yuan18_L_rad = GetRadEfficiency(mdot_norm) * mdot_bh * C_LIGHT_CODE * C_LIGHT_CODE;
@@ -895,7 +914,7 @@ void set_blackhole_new_mass(int i, int n, double dt)
     BPP(n).BH_AccretionDeficit += dMBH_continuous_accretion; // this is mass continuously accreted, which needs to be stochastically 'caught up to'
 #endif
 
-#if defined(BH_YUAN18_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+#if defined(BH_YUAN18_WIND_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_SPAWN)
     /* Yuan18 solves mdot_bh and mdot_wind separately. BH_Mass has already grown by mdot_bh*dt above;
        add the wind portion only to the stochastic gas-swallow deficit so gas around the BH loses the full
        mdot_bondi*dt = (mdot_bh + mdot_wind)*dt represented by the inflow. */
@@ -1218,30 +1237,30 @@ void blackhole_final_operations(void)
         double n_unspawned = BPP(n).unspawned_wind_mass / ((BH_WIND_SPAWN)*target_mass_for_wind_spawning(n)); // number of spawned gas cells that can be made from the mass in the reservoir
         if(n_unspawned> Max_Unspawned_MassUnits_fromSink) {Max_Unspawned_MassUnits_fromSink = n_unspawned;} // track the maximum integer number of elements this sink could spawn
 #endif
-#ifdef BH_YUAN18_SPAWN
-        /* Yuan18 wind reservoir feed. The physical BH mass has already grown only by mdot_bh*dt, so do not
-           subtract wind mass from BPP(n).BH_Mass here. P[n].Mass is not decremented until actual spawned
-           wind cells are created in blackhole_yuan18_spawn_particle_wind_shell. The reservoir accumulates
-           until it contains enough target-mass units for an angularly sampled spawn batch; this is still not
-           MACER3D's wind travel-time buffer. v_wind and eps_wind are mass-weighted over the accumulated reservoir;
-           r_inject, mode_wind, and launch axis use the latest timestep contribution. TODO(Yuan18): split this into per-mode reservoirs
-           so HOT/SUB/SUP material is not mixed when the flow mode changes between spawn events. */
+#ifdef BH_YUAN18_WIND_SPAWN
+        /* The spawn wind path queues mass until it reaches the configured batch size.
+           The current mode, speed, and thermal state follow the latest contribution. */
         double dm_wind_yuan18 = BlackholeTempInfo[i].Yuan18_mdot_wind * dt;
         if(dm_wind_yuan18 > 0)
         {
-            double reservoir_mass_old = BPP(n).Yuan18_BH_reservoir_mass;
-            double reservoir_mass_new = reservoir_mass_old + dm_wind_yuan18;
-            double w_old = reservoir_mass_old / reservoir_mass_new;
-            double w_new = dm_wind_yuan18 / reservoir_mass_new;
-            BPP(n).Yuan18_BH_reservoir_v_wind    = w_old * BPP(n).Yuan18_BH_reservoir_v_wind   + w_new * BPP(n).Yuan18_BH_v_wind;
-            BPP(n).Yuan18_BH_reservoir_eps_wind  = w_old * BPP(n).Yuan18_BH_reservoir_eps_wind + w_new * BPP(n).Yuan18_BH_eps_wind;
-            BPP(n).Yuan18_BH_reservoir_mode_wind = BPP(n).Yuan18_BH_mode_wind;
-            for(int kk=0; kk<3; kk++) {BPP(n).Yuan18_BH_reservoir_J_dir[kk] = BPP(n).Yuan18_BH_J_dir[kk];}
-            BPP(n).Yuan18_BH_reservoir_mass = reservoir_mass_new;
+            BPP(n).Yuan18_BH_unspawned_wind_mass += dm_wind_yuan18;
         }
         double target_wind_mass = target_mass_for_wind_spawning(n);
-        double n_reservoir_yuan18 = (target_wind_mass > 0) ? (BPP(n).Yuan18_BH_reservoir_mass / target_wind_mass) : (BPP(n).Yuan18_BH_reservoir_mass > 0);
+        double n_reservoir_yuan18 = (target_wind_mass > 0) ? (BPP(n).Yuan18_BH_unspawned_wind_mass / target_wind_mass) : 0;
         if(n_reservoir_yuan18 > Max_Yuan18_WindReservoirMassUnits_fromSink) {Max_Yuan18_WindReservoirMassUnits_fromSink = n_reservoir_yuan18;}
+#endif
+
+#ifdef BH_YUAN18_JET_SPAWN
+        /* The reference jet is a hot-mode component. Emit the complete mdot_jet*dt
+           packet immediately and divide it across both polar lobes in the dispatcher. */
+        double dm_jet_yuan18 = BPP(n).Yuan18_BH_mdot_jet * dt;
+        if(BlackholeTempInfo[i].Yuan18_mode_wind == 1 && dm_jet_yuan18 > 0 && BPP(n).Yuan18_BH_v_jet > 0)
+        {
+            BPP(n).Yuan18_BH_jet_step_mass = dm_jet_yuan18;
+            BPP(n).Yuan18_BH_jet_step_v_jet = BPP(n).Yuan18_BH_v_jet;
+            BPP(n).Yuan18_BH_jet_step_eps_jet = BPP(n).Yuan18_BH_eps_jet;
+            for(int kk=0; kk<3; kk++) {BPP(n).Yuan18_BH_jet_step_J_dir[kk] = BPP(n).Yuan18_BH_J_dir[kk];}
+        }
 #endif
 
 #ifdef RT_BH_ANGLEWEIGHT_PHOTON_INJECTION
@@ -1270,16 +1289,16 @@ void blackhole_final_operations(void)
          *               Reservoir columns are only populated by the spawn path; continuous Yuan18 wind outputs
          *               zeros there and uses the current BlackholeTempInfo wind state for columns 37-40. */
 #ifdef BH_YUAN18_ACCRETION
-#if (defined(BH_YUAN18_SPAWN) && defined(BH_YUAN18_WIND_DIAGNOSTIC_OUTPUT)) || defined(BH_YUAN18_WIND_CONTINUOUS)
+#if (defined(BH_YUAN18_WIND_SPAWN) && defined(BH_YUAN18_WIND_DIAGNOSTIC_OUTPUT)) || defined(BH_YUAN18_WIND_CONTINUOUS)
         double yuan18_reservoir_mass = 0, yuan18_reservoir_v_wind = 0, yuan18_reservoir_eps_wind = 0;
         double yuan18_reservoir_J_dir[3] = {0,0,0}, yuan18_target_wind_mass = 0, yuan18_n_reservoir_units = 0;
         int yuan18_reservoir_mode_wind = 0;
-#ifdef BH_YUAN18_SPAWN
-        yuan18_reservoir_mass = BPP(n).Yuan18_BH_reservoir_mass;
-        yuan18_reservoir_v_wind = BPP(n).Yuan18_BH_reservoir_v_wind;
-        yuan18_reservoir_eps_wind = BPP(n).Yuan18_BH_reservoir_eps_wind;
-        yuan18_reservoir_mode_wind = BPP(n).Yuan18_BH_reservoir_mode_wind;
-        for(int kk=0; kk<3; kk++) {yuan18_reservoir_J_dir[kk] = BPP(n).Yuan18_BH_reservoir_J_dir[kk];}
+#ifdef BH_YUAN18_WIND_SPAWN
+        yuan18_reservoir_mass = BPP(n).Yuan18_BH_unspawned_wind_mass;
+        yuan18_reservoir_v_wind = BPP(n).Yuan18_BH_v_wind;
+        yuan18_reservoir_eps_wind = BPP(n).Yuan18_BH_eps_wind;
+        yuan18_reservoir_mode_wind = BPP(n).Yuan18_BH_mode_wind;
+        for(int kk=0; kk<3; kk++) {yuan18_reservoir_J_dir[kk] = BPP(n).Yuan18_BH_J_dir[kk];}
         yuan18_target_wind_mass = target_wind_mass;
         yuan18_n_reservoir_units = n_reservoir_yuan18;
 #endif

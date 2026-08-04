@@ -306,10 +306,10 @@
 #BH_GRAVACCRETION_STELLARFBCORR # account for additional acceleration-dependent retention from stellar FB in Mdot. cite Hopkins et al., arXiv:2103.10444, for both the analytic derivation of these scalings and the numerical methods/implementation.
 #BH_BONDI=0                     # Bondi-Hoyle style accretion model: 0=default (with velocity); 1=dont use gas velocity with sound speed; 2=variable-alpha tweak (Booth & Schaye 2009; requires GALSF). cite Springel, Di Matteo, and Hernquist, 2005, MNRAS, 361, 776
 #BH_YUAN18_ACCRETION            # accretion model from Yuan et al. 2018, ApJ, 857, 121. cite Yuan et al. 2018, ApJ, 857, 121
-#BH_YUAN18_SPAWN=32              # spawn-based wind injection from Yuan18/MACER AGN model (requires BH_YUAN18_ACCRETION). value is the minimum wind-particle batch size, following BH_WIND_SPAWN-style thresholding and per-event cap max(20,3*BH_YUAN18_SPAWN). injects on the Yuan18/MACER r_inject surface. No fixed injection radius is imposed. cite Yuan et al. 2018, ApJ, 857, 121; Zhang et al. 2025, arXiv:2504.06342
-#BH_YUAN18_WIND_CONTINUOUS      # continuous Yuan18/MACER wind injection on the Yuan18/MACER r_inject surface (requires BH_YUAN18_ACCRETION). couples Yuan18 mdot_wind/v_wind/eps_wind to gas kernels intersecting the injection surface, using HOT/SUB/SUP angular weights. No fixed injection radius is imposed.
-#BH_YUAN18_JET_CONTINUOUS       # continuous Yuan18/MACER hot-mode jet injection on the Yuan18/MACER r_inject surface (requires BH_YUAN18_ACCRETION). couples mdot_jet=0.5*mdot_bh, v_jet=0.3c, eps_jet=0 to gas kernels intersecting the injection surface, using the yuan18.cpp 0-10 degree bipolar jet cone.
-#BH_YUAN18_WIND_FIXED_Z_AXIS    # debug option for BH_YUAN18_SPAWN, BH_YUAN18_WIND_CONTINUOUS, or BH_YUAN18_JET_CONTINUOUS: force the Yuan18 angular-distribution axis to the simulation z-axis instead of BH_Specific_AngMom/Jgas, useful for validating cos^2(theta) sampling
+#BH_YUAN18_JET_SPAWN=4           # spawn-based Yuan18/MACER hot-mode jet injection (requires BH_YUAN18_ACCRETION). value is the number of particles spawned in each polar lobe on every active hot-mode BH feedback timestep (twice this many total); the timestep's mdot_jet*dt mass is divided equally among them.
+#BH_YUAN18_WIND_SPAWN=2          # spawn-based Yuan18/MACER wind injection (requires BH_YUAN18_ACCRETION). value is the minimum number of wind particles spawned per reservoir event; launches HOT/SUB/SUP winds from the weighted Bondi-radius surface using Yuan18 angular weights.
+#BH_YUAN18_WIND_CONTINUOUS      # continuous Yuan18/MACER wind injection on the weighted Bondi-radius surface (requires BH_YUAN18_ACCRETION). couples Yuan18 mdot_wind/v_wind/eps_wind to gas kernels intersecting the injection surface, using HOT/SUB/SUP angular weights.
+#BH_YUAN18_WIND_FIXED_Z_AXIS    # debug option for BH_YUAN18_JET_SPAWN, BH_YUAN18_WIND_SPAWN, or BH_YUAN18_WIND_CONTINUOUS: force the Yuan18 angular-distribution axis to the simulation z-axis instead of BH_Specific_AngMom/Jgas, useful for validating cos^2(theta) sampling
 ## ----------------------------------------------------------------------------------------------------
 # ----- feedback models/options
 ## ----------------------------------------------------------------------------------------------------
@@ -475,6 +475,8 @@
 #OUTPUT_GRADIENT_VEL            # outputs the full velocity gradient tensor field for the gas
 #OUTPUT_BFIELD_DIVCLEAN_INFO    # outputs the phi, phi-gradient, and numerical div-B fields used for de-bugging MHD simulations
 #OUTPUT_TIMESTEP                # outputs timesteps for each particle
+#OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS # default-off, per-rank diagnostic trace of raw timestep criteria, assignment/rounding, wakeups, spawn initialization, and next-kick candidates; records only and must not alter physical evolution
+#OUTPUT_YUAN18_BH_STATE         # output the persistent Yuan18 BH accretion state (fall/disk masses, Bondi inflow rate, and Bondi radius) for PartType5 and restore it on snapshot restart; requires BH_YUAN18_ACCRETION
 #OUTPUT_SOFTENING               # outputs force softening for each particle
 #OUTPUT_COOLRATE                # outputs cooling rate, and conduction rate if enabled
 #OUTPUT_COOLRATE_DETAIL         # outputs cooling rate term by term [saves all individually to snapshot]
@@ -502,6 +504,7 @@
 #IO_SUBFIND_READFOF_FROMIC      # try read already existing FOF files associated with a run instead of recomputing them: not de-bugged
 #OUTPUT_TURB_DIFF_DYNAMIC_ERROR # save error terms from localized dynamic Smagorinsky model to snapshots
 #IO_MOLECFRAC_NOT_IN_ICFILE     # special flag needed if using certain molecular modules with restart flag=2 where molecular data was not in that snapshot, to tell code not to read it
+#NO_YUAN18_BH_STATE_IN_ICS      # compatibility flag for restartflag=2 from an older snapshot that lacks the OUTPUT_YUAN18_BH_STATE datasets; the missing state cannot be restored, but subsequent snapshots can write it
 #IO_REDUNDANT_BACKUP_RESTARTFILE_FREQUENCY=3  # keep an extra set of backup files that are IO_REDUNDANT_BACKUP_RESTARTFILE_FREQUENCY number of restarts old (allows for soft restarts from an older position)
 #IO_GRADUAL_SNAPSHOT_RESTART    # when restarting from a snapshot (flag=2) start every element on the shortest possible timestep - can reduce certain transient behaviors from the restart procedure
 #IO_SINKS_ONLY_SNAPSHOT_FREQUENCY # determines the number of snapshots with reduced data (sinks only) per full snapshots (gas+sinks+other), e.g., setting this to 2 means 2/3 of the snapshots will be reduced, 1/3 will have full data. Setting this to 0 disables it. developed by DG.

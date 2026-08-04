@@ -386,6 +386,32 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
 #ifdef BLACK_HOLES
             for(n = 0; n < pc; n++) {P[offset + n].BH_Mdot = *fp++;}
 #endif
+            break;
+
+        case IO_YUAN18_BH_MASS_FALL:
+#if defined(BH_YUAN18_ACCRETION) && defined(OUTPUT_YUAN18_BH_STATE)
+            for(n = 0; n < pc; n++) {P[offset + n].Yuan18_BH_Mass_fall = *fp++;}
+#endif
+            break;
+
+        case IO_YUAN18_BH_MASS_DISK:
+#if defined(BH_YUAN18_ACCRETION) && defined(OUTPUT_YUAN18_BH_STATE)
+            for(n = 0; n < pc; n++) {P[offset + n].Yuan18_BH_Mass_disk = *fp++;}
+#endif
+            break;
+
+        case IO_YUAN18_BH_MDOT_BONDI:
+#if defined(BH_YUAN18_ACCRETION) && defined(OUTPUT_YUAN18_BH_STATE)
+            for(n = 0; n < pc; n++) {P[offset + n].Yuan18_BH_Mdot_Bondi = *fp++;}
+#endif
+            break;
+
+        case IO_YUAN18_BH_BONDI_RADIUS:
+#if defined(BH_YUAN18_ACCRETION) && defined(OUTPUT_YUAN18_BH_STATE)
+            for(n = 0; n < pc; n++) {P[offset + n].Yuan18_BH_Bondi_Radius = *fp++;}
+#endif
+            break;
+
         case IO_R_PROTOSTAR:
             break;
 
@@ -576,30 +602,6 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
 #endif
             break;
 
-        case IO_YUAN18_JET_MASS:
-#ifdef BH_YUAN18_JET_CONTINUOUS
-             for(n = 0; n < pc; n++) {SphP[offset + n].Yuan18JetMass = *fp++;}
-#endif
-            break;
-
-        case IO_YUAN18_JET_ENERGY:
-#ifdef BH_YUAN18_JET_CONTINUOUS
-             for(n = 0; n < pc; n++) {SphP[offset + n].Yuan18JetEnergy = *fp++;}
-#endif
-            break;
-
-        case IO_YUAN18_JET_MOMENTUM:
-#ifdef BH_YUAN18_JET_CONTINUOUS
-             for(n = 0; n < pc; n++) {for(k=0;k<3;k++) {SphP[offset + n].Yuan18JetMomentum[k] = *fp++;}}
-#endif
-            break;
-
-        case IO_YUAN18_JET_LASTMODE:
-#ifdef BH_YUAN18_JET_CONTINUOUS
-             for(n = 0; n < pc; n++) {SphP[offset + n].Yuan18JetLastMode = *ip_int++;}
-#endif
-            break;
-            
         case IO_IDEN:
 #if defined(BH_WIND_SPAWN_SET_BFIELD_POLTOR) && defined(BH_DEBUG_SPAWN_JET_TEST)
              for(n = 0; n < pc; n++) {SphP[offset + n].IniDen = *fp++;}
@@ -1067,6 +1069,12 @@ void read_file(char *fname, int readTask, int lastTask)
 
 #if defined(IO_MOLECFRAC_NOT_IN_ICFILE)
             if(RestartFlag == 2 && blocknr == IO_MOLECULARFRACTION) {continue;}
+#endif
+
+#ifdef NO_YUAN18_BH_STATE_IN_ICS
+            if(RestartFlag == 2 &&
+               (blocknr == IO_YUAN18_BH_MASS_FALL || blocknr == IO_YUAN18_BH_MASS_DISK ||
+                blocknr == IO_YUAN18_BH_MDOT_BONDI || blocknr == IO_YUAN18_BH_BONDI_RADIUS)) {continue;}
 #endif
 
             

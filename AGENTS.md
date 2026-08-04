@@ -56,12 +56,15 @@ Physics and infrastructure modules are grouped by directory:
 - `nuclear/`: nuclear reaction network code.
 - `system/`: custom allocation, MPI utilities, sorting, Peano-Hilbert ordering, pinning, vector helpers.
 - `scripts/`: docs, test problem parameter files, IC helpers, analysis helpers, and Yuan18/MACER references.
+- `check_scripts/`: local Python validation scripts used to check whether the current code satisfies an active task.
 
-`blackhole_run/` contains a local Bondi/Yuan18 test setup, scripts, snapshots, logs, and comparison output. Do not treat it as source unless the user asks. `XPHO_PROJECT/` is a separate nested project with its own `.git`; avoid touching it for GIZMO work unless explicitly requested.
+`blackhole_run/` contains a local Bondi/Yuan18 test setup, scripts, snapshots, logs, and comparison output. Do not treat it as source unless the user asks. All isodisk-related simulations, including run setups, helper scripts, diagnostics, snapshots, and output directories, should live under `isodisk_run/`. `XPHO_PROJECT/` is a separate nested project with its own `.git`; avoid touching it for GIZMO work unless explicitly requested.
 
 ## Scripts Directory Notes
 
 The `scripts/` directory is a mix of documentation, reference physics, example parameter files, analysis utilities, and destructive archival helpers. Do not treat every script as current source behavior; check whether it is a reference, a template, a validation helper, or an archival tool before using it.
+
+Do not add new Python files that check whether the current code satisfies an active task to `scripts/`. Put those task-checking Python files under `check_scripts/` instead.
 
 Important files and how to use them:
 
@@ -90,7 +93,6 @@ Common commands:
 ```sh
 cp Template_Config.sh Config.sh
 make
-make CONFIG=MyConfig.sh EXEC=GIZMO_test
 make clean
 mpirun -np <N> ./GIZMO scripts/test_problems/shocktube.params
 ```
@@ -191,6 +193,8 @@ indent -gnu -npsl -npcs -nbs -nsaf -nsai -nsaw -nprs -bap -pmt -l110 *.c
 
 Use the existing macro-heavy style and keep new physics behind compile-time guards. Add prototypes to `proto.h` or module headers as appropriate. Prefer local helper patterns such as `DMAX`, `DMIN`, `BPP(i)`, `P[i]`, `SphP[i]`, `All.*`, and existing MPI/reduction utilities instead of introducing new conventions.
 
+New code added for a task must be protected by a dedicated compile-time macro selected through `Config.sh` and, when the flag is intended to be reusable, listed disabled/defaulted in `Template_Config.sh`. Keep the new code path well isolated from existing GIZMO behavior: when the new macro is off, the code should compile and run through the pre-existing GIZMO path with no changed defaults, side effects, output semantics, or required interface changes. Guard any new struct fields, prototypes, output blocks, parameter parsing, and runtime hooks with the same macro or an intentionally shared parent macro.
+
 Global variables and struct fields usually use uppercase-leading CamelCase or existing GADGET/GIZMO names, for example `All.TimeMax`, `P[i].Mass`, and `NumForceCalculations`. Functions are generally lowercase with underscores or existing mixed local style. Match the surrounding file.
 
 ## Testing and Validation
@@ -200,6 +204,7 @@ There is no standalone unit-test harness. Validate with focused builds and repre
 - Build with the relevant `Config.sh` flags.
 - Rebuild from clean after changing compile-time flags.
 - Run small problems from `scripts/test_problems/`.
+- Put new Python check scripts for current-code task validation in `check_scripts/`, not `scripts/`.
 - For black hole/Yuan18 work, use `blackhole_run/bondi_test.params` and helper scripts such as `blackhole_run/crosscheck_accretion.py`, `blackhole_run/plot_mdot_history.py`, and `blackhole_run/visualize_BH.py` when appropriate.
 - Compare logs such as `blackholes.txt`, `blackhole_details`, `energy.txt`, `balance.txt`, `timebin.txt`, and snapshots.
 

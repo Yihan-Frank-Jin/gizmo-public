@@ -14,7 +14,11 @@
 #include "./allvars.h"
 #include "./proto.h"
 #include "./kernel.h"
-#ifdef BH_WIND_SPAWN
+#if defined(BH_WIND_SPAWN) || defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
+#define BH_SPAWNED_OUTFLOW_PARTICLES
+#endif
+
+#ifdef BH_SPAWNED_OUTFLOW_PARTICLES
 #define MASS_THRESHOLD_FOR_WINDPROMO(i) (DMAX(5.*target_mass_for_wind_spawning(i),0.25*All.MaxMassForParticleSplit))
 #endif /* define a mass threshold for this model above which a 'hyper-element' has accreted enough to be treated as 'normal' */
 
@@ -50,7 +54,7 @@ int does_particle_need_to_be_merged(int i)
     if(P[i].Type>0) {return 0;} // don't allow merging of collisionless particles [only splitting, in these runs]
     if(is_particle_a_special_zoom_target(i)) {return 0;}
 #endif
-#ifdef BH_WIND_SPAWN
+#ifdef BH_SPAWNED_OUTFLOW_PARTICLES
     if(P[i].ID==All.AGNWindID && P[i].Type==0)
     {
 #ifdef BH_DEBUG_SPAWN_JET_TEST
@@ -371,7 +375,7 @@ void merge_and_split_particles(void)
 #ifdef GALSF_MERGER_STARCLUSTER_PARTICLES
                         if(P[i].Type==4 && P[j].Type==4) {m_eff=evaluate_starstar_merger_for_starcluster_particle_pair(i,j); if(m_eff<=0) {do_allow_merger=0;} else {do_allow_merger=1;}}
 #endif
-#ifdef BH_WIND_SPAWN
+#ifdef BH_SPAWNED_OUTFLOW_PARTICLES
                         if(P[i].ID==All.AGNWindID && P[i].Type==0)
                         {
                             if(P[i].Mass>=MASS_THRESHOLD_FOR_WINDPROMO(i))
@@ -383,7 +387,7 @@ void merge_and_split_particles(void)
                                 if(v2_tmp > 0) {v2_tmp=sqrt(v2_tmp*All.cf_a2inv);} else {v2_tmp=0;}
                                 if(P[j].ID == All.AGNWindID) {do_allow_merger = 0;} // wind particles can't intermerge
                                 if(v2_tmp >  DMIN(Get_Gas_effective_soundspeed_i(i),Get_Gas_effective_soundspeed_i(j))*All.cf_afac3) {do_allow_merger = 0;}
-#if !(defined(SINGLE_STAR_FB_JETS) || defined(SINGLE_STAR_FB_WINDS))
+#if defined(BH_WIND_SPAWN) && !(defined(SINGLE_STAR_FB_JETS) || defined(SINGLE_STAR_FB_WINDS))
                                 if((v2_tmp > 0.25*All.BAL_v_outflow) && (v2_tmp > 0.9*Get_Gas_effective_soundspeed_i(j)*All.cf_afac3)) {do_allow_merger=0;}
 #endif
                             }
@@ -764,7 +768,7 @@ int merge_particles_ij(int i, int j)
     if(((P[i].Type==0)||(P[j].Type==0)) && (P[j].Type!=P[i].Type)) {printf("WARNING: code is trying to merge a gas cell with a non-gas particle. I dont know how to do this. Exiting the merge subroutine."); fflush(stdout); return 0;}
 
     int swap_ids = 0; if(P[i].Mass > P[j].Mass) {swap_ids = 1;} /* retain the IDs of the more massive progenitor */
-#ifdef BH_WIND_SPAWN
+#ifdef BH_SPAWNED_OUTFLOW_PARTICLES
     if(P[i].ID == All.AGNWindID) {swap_ids = 0;} /* don't copy an agn wind id */
     if(P[j].ID == All.AGNWindID) {P[j].ID = All.AGNWindID + 1;} /* offset this to avoid checks through code */
 #endif

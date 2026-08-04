@@ -273,15 +273,12 @@ void calculate_non_standard_physics(void)
 #endif
 #endif
 
-#ifdef BH_YUAN18_SPAWN  /* parallel to BH_WIND_SPAWN; mutually exclusive (#error guard in allvars.h). BH_YUAN18_SPAWN gives the Yuan18 spawn threshold in target-mass units. */
+#ifdef BH_YUAN18_WIND_SPAWN
         double Max_Yuan18_WindReservoirMassUnits_fromSink_global;
         MPI_Allreduce(&Max_Yuan18_WindReservoirMassUnits_fromSink, &Max_Yuan18_WindReservoirMassUnits_fromSink_global, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-        double yuan18_wind_max_reservoir_particles = Max_Yuan18_WindReservoirMassUnits_fromSink_global;
-        double yuan18_wind_mass_in_reservoir = yuan18_wind_max_reservoir_particles * All.BAL_wind_particle_mass;
-        double yuan18_wind_mass_threshold = BH_YUAN18_SPAWN * All.BAL_wind_particle_mass;
         int yuan18_wind_particles_spawned = 0;
         double yuan18_wind_mass_spawned = 0;
-        if(Max_Yuan18_WindReservoirMassUnits_fromSink_global >= BH_YUAN18_SPAWN)
+        if(Max_Yuan18_WindReservoirMassUnits_fromSink_global >= BH_YUAN18_WIND_SPAWN)
         {
             yuan18_wind_particles_spawned = spawn_bh_yuan18_wind_feedback(&yuan18_wind_mass_spawned);
             if(yuan18_wind_particles_spawned > 0)
@@ -292,8 +289,23 @@ void calculate_non_standard_physics(void)
         }
         if((ThisTask == 0) && (yuan18_wind_particles_spawned > 0))
         {
-            printf("[Yuan18-wind] spawned_particles=%d spawned_mass=%g, mass_in_reservoir=%g, mass_threshold=%g\n",
-                   yuan18_wind_particles_spawned, yuan18_wind_mass_spawned, yuan18_wind_mass_in_reservoir, yuan18_wind_mass_threshold);
+            printf("[Yuan18-wind-spawn] spawned_particles=%d spawned_mass=%g\n",
+                   yuan18_wind_particles_spawned, yuan18_wind_mass_spawned);
+            fflush(stdout);
+        }
+#endif
+
+#ifdef BH_YUAN18_JET_SPAWN
+        double yuan18_mass_spawned = 0;
+        int yuan18_particles_spawned = spawn_bh_yuan18_feedback(&yuan18_mass_spawned);
+        if(yuan18_particles_spawned > 0)
+        {
+            rearrange_particle_sequence();
+        }
+        if((ThisTask == 0) && (yuan18_particles_spawned > 0))
+        {
+            printf("[Yuan18-jet-spawn] spawned_particles=%d spawned_mass=%g, particles_per_hot_bh_timestep=%d\n",
+                   yuan18_particles_spawned, yuan18_mass_spawned, 2 * BH_YUAN18_JET_SPAWN);
             fflush(stdout);
         }
 #endif

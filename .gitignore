@@ -12,6 +12,7 @@ GIZMO_config.h
 
 CLAUDE.md
 
+
 .claude/
 
 GIZMO
@@ -26,3 +27,8 @@ docs/
 scripts/blackhole_adios_wind_randomized.c
 
 reports/
+
+isodisk_run/
+
+check_scripts/
+AGENTS.md
