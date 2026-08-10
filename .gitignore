@@ -1,34 +1,41 @@
-*.o
-
-blackhole_run/
-
-.DS_Store
-
+# Local build configuration and generated build products
 Config.sh
-
+Makefile.systype.local
 compile_time_info.c
-
 GIZMO_config.h
-
-CLAUDE.md
-
-
-.claude/
-
 GIZMO
 GIZMO_*
+*.o
+*.oo
+*.build
 
-.vscode
+# Machine-, editor-, and cache-specific files
+.DS_Store
+.vscode/
+.claude/
+__pycache__/
+*.py[cod]
 
+# Local project instructions, notes, reports, and references
 AGENTS.md
-
+CLAUDE.md
 docs/
-
-scripts/blackhole_adios_wind_randomized.c
-
 reports/
-
-isodisk_run/
-
 check_scripts/
-AGENTS.md
+scripts/yuan18.cpp
+scripts/blackhole_adios_wind_randomized.c
+*.pdf
+yuan18_unphysical_velocity_temperature_root_cause_analysis.md
+
+# Simulations, restarts, diagnostics, and visualizations
+blackhole_run/
+isodisk_run/
+output/
+tmp/
+restartfiles/
+snapshot_*.hdf5
+snapdir_*/
+*.png
+*.jpg
+*.jpeg
+*.mp4
