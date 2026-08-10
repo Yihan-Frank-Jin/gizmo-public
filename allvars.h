@@ -438,8 +438,8 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #if defined(BH_YUAN18_JET_SPAWN) && !defined(BH_YUAN18_ACCRETION)
 #error "BH_YUAN18_JET_SPAWN requires BH_YUAN18_ACCRETION (hot-mode mdot_bh, r_inject, and launch-axis state come from the Yuan18 accretion pipeline)."
 #endif
-#if defined(BH_YUAN18_JET_SPAWN) && (BH_YUAN18_JET_SPAWN < 1)
-#error "BH_YUAN18_JET_SPAWN must be at least 1 (it sets the number of jet particles spawned per polar lobe on each active hot-mode BH timestep)."
+#if defined(BH_YUAN18_JET_SPAWN) && ((BH_YUAN18_JET_SPAWN < 2) || ((BH_YUAN18_JET_SPAWN % 2) != 0))
+#error "BH_YUAN18_JET_SPAWN must be an even integer at least 2 (the minimum total number of cells in one antipodally paired jet launch)."
 #endif
 #if defined(BH_YUAN18_WIND_SPAWN) && !defined(BH_YUAN18_ACCRETION)
 #error "BH_YUAN18_WIND_SPAWN requires BH_YUAN18_ACCRETION (mode determination, mdot_wind, v_wind, eps_wind, and Bondi launch radius come from the Yuan18 accretion pipeline)."
@@ -458,6 +458,12 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #endif
 #if defined(NO_YUAN18_BH_STATE_IN_ICS) && !defined(OUTPUT_YUAN18_BH_STATE)
 #error "NO_YUAN18_BH_STATE_IN_ICS is only meaningful with OUTPUT_YUAN18_BH_STATE enabled."
+#endif
+#if defined(NO_YUAN18_BH_MODE_IN_ICS) && !defined(OUTPUT_YUAN18_BH_STATE)
+#error "NO_YUAN18_BH_MODE_IN_ICS is only meaningful with OUTPUT_YUAN18_BH_STATE enabled."
+#endif
+#if defined(NO_YUAN18_JET_RESERVOIR_IN_ICS) && (!defined(OUTPUT_YUAN18_BH_STATE) || !defined(BH_YUAN18_JET_SPAWN))
+#error "NO_YUAN18_JET_RESERVOIR_IN_ICS requires OUTPUT_YUAN18_BH_STATE and BH_YUAN18_JET_SPAWN."
 #endif
 #if defined(OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS) && !defined(WAKEUP)
 #error "OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS currently requires the standard WAKEUP timestep bookkeeping."
@@ -2771,6 +2777,7 @@ extern ALIGN(32) struct particle_data
     MyFloat Yuan18_BH_Mass_disk;
     MyFloat Yuan18_BH_Mdot_Bondi;
     MyFloat Yuan18_BH_Bondi_Radius; /* weighted Bondi radius from previous timestep [physical]; used as search-radius floor in bondi_radius_loop */
+    int     Yuan18_BH_mode_wind;    /* most recently evaluated Yuan18 wind mode: 0=NONE, 1=HOT, 2=SUB, 3=SUP */
 #endif
 #if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
     MyFloat Yuan18_BH_r_inject;           /* current Yuan18 launch/coupling radius [physical code units]: weighted Bondi radius for spawn outflows */
@@ -2780,16 +2787,12 @@ extern ALIGN(32) struct particle_data
     MyFloat Yuan18_BH_unspawned_wind_mass; /* accumulated Yuan18 wind mass waiting for the next spawn event [code mass] */
     MyFloat Yuan18_BH_v_wind;             /* current Yuan18 wind launch speed [physical code units] */
     MyFloat Yuan18_BH_eps_wind;           /* current Yuan18 wind specific internal energy [code units] */
-    int     Yuan18_BH_mode_wind;          /* current Yuan18 wind mode: 0=NONE, 1=HOT, 2=SUB, 3=SUP */
 #endif
 #ifdef BH_YUAN18_JET_SPAWN
     MyFloat Yuan18_BH_mdot_jet;           /* current hot-mode jet mass flux [code mass/time]: 0.5 * mdot_bh in yuan18.cpp */
     MyFloat Yuan18_BH_v_jet;              /* current jet launch speed [physical code units]: 0.3c in yuan18.cpp */
     MyFloat Yuan18_BH_eps_jet;            /* current jet specific internal energy [code units]: zero in yuan18.cpp */
-    MyFloat Yuan18_BH_jet_step_mass;       /* current active hot-mode BH timestep's jet mass, spawned immediately as two bipolar particle groups [code mass] */
-    MyFloat Yuan18_BH_jet_step_v_jet;      /* launch speed associated with Yuan18_BH_jet_step_mass [physical code units] */
-    MyFloat Yuan18_BH_jet_step_eps_jet;    /* specific internal energy associated with Yuan18_BH_jet_step_mass [code units] */
-    MyFloat Yuan18_BH_jet_step_J_dir[3];   /* launch-axis snapshot associated with Yuan18_BH_jet_step_mass */
+    MyFloat Yuan18_BH_unspawned_jet_mass; /* accumulated HOT-mode jet mass waiting for a paired target-mass launch [code mass] */
 #endif
 #endif  /* if defined(BLACK_HOLES) */
 #ifdef BH_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
@@ -3658,6 +3661,8 @@ enum iofields
   IO_YUAN18_BH_MASS_DISK,
   IO_YUAN18_BH_MDOT_BONDI,
   IO_YUAN18_BH_BONDI_RADIUS,
+  IO_YUAN18_BH_MODE_WIND,
+  IO_YUAN18_JET_RESERVOIR_MASS,
   IO_SINKDUSTMASSACC,
   IO_R_PROTOSTAR,
   IO_MASS_D_PROTOSTAR,

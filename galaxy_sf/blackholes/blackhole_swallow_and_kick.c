@@ -228,6 +228,9 @@ struct OUTPUT_STRUCT_NAME
     MyDouble accreted_Mass;
     MyDouble accreted_BH_Mass;
     MyDouble accreted_BH_Mass_alphadisk;
+#ifdef BH_YUAN18_JET_SPAWN
+    MyDouble accreted_Yuan18_jet_reservoir_mass;
+#endif
 #if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
     MyDouble BH_AccretionDeficit;
 #endif
@@ -267,6 +270,10 @@ static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, in
     ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_Mass, out->accreted_Mass, mode);
     ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_BH_Mass, out->accreted_BH_Mass, mode);
     ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_BH_Mass_alphadisk, out->accreted_BH_Mass_alphadisk, mode);
+#ifdef BH_YUAN18_JET_SPAWN
+    ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_Yuan18_jet_reservoir_mass,
+                      out->accreted_Yuan18_jet_reservoir_mass, mode);
+#endif
 #if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
     ASSIGN_ADD_PRESET(BlackholeTempInfo[target].BH_AccretionDeficit, out->BH_AccretionDeficit, mode);
 #endif
@@ -547,6 +554,9 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 #endif
 #ifdef BH_WIND_SPAWN
                         out_accreted_BH_Mass_alphaornot += FLT(BPP(j).unspawned_wind_mass);
+#endif
+#ifdef BH_YUAN18_JET_SPAWN
+                        out.accreted_Yuan18_jet_reservoir_mass += FLT(BPP(j).Yuan18_BH_unspawned_jet_mass);
 #endif
 #ifdef BH_COUNTPROGS
                         out.BH_CountProgs += BPP(j).BH_CountProgs;
@@ -1391,7 +1401,7 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 #endif
 
 
-#ifdef BH_YUAN18_SPAWN
+#ifdef BH_YUAN18_WIND_SPAWN
 /* Yuan18 angular sampler -- chooses (theta, phi) in the local Yuan18 wind-axis frame per Yuan18 mode, then rotates into the lab frame.
    theta is measured from the wind axis nz; nx,ny complete the orthonormal basis (nx is reconstructed from ny x nz).
    Sampling is stratified in the mode-specific CDF over the actual spawn batch size, not random per particle.
@@ -1465,14 +1475,13 @@ static int yuan18_find_wind_template_cell(double *target_pos)
 
 
 /* Yuan18 spawn routine: emits the accumulated reservoir for a single BH once it contains enough mass
-   for a well-sampled angular batch. mode/v_wind/eps_wind come from the reservoir and r_inject is current.
+   for a well-sampled angular batch. mode/v_wind/eps_wind and r_inject use the current Yuan18 state.
    Angular sampling uses the current BH specific-angular-momentum wind axis as the reference frame. */
 int blackhole_yuan18_spawn_particle_wind_shell(int i, int num_already_spawned)
 {
-    int mode_wind = BPP(i).Yuan18_BH_reservoir_mode_wind;
-    if(mode_wind == 0) {mode_wind = BPP(i).Yuan18_BH_mode_wind;} /* backward-compatible fallback for old restarts */
+    int mode_wind = BPP(i).Yuan18_BH_mode_wind;
     if(mode_wind == 0) {return 0;} /* NONE: nothing to spawn */
-    double total_mass_in_winds = BPP(i).Yuan18_BH_reservoir_mass;
+    double total_mass_in_winds = BPP(i).Yuan18_BH_unspawned_wind_mass;
     if(total_mass_in_winds <= 0) {return 0;}
     double target_wind_mass = target_mass_for_wind_spawning(i);
     if(target_wind_mass <= 0) {return 0;}
@@ -1481,10 +1490,10 @@ int blackhole_yuan18_spawn_particle_wind_shell(int i, int num_already_spawned)
 
     /* Defer small reservoirs and cap bursty events following the native BH_WIND_SPAWN batching pattern.
        Each spawned particle keeps the target mass; any excess reservoir mass remains queued for later. */
-    if(n_particles_split < BH_YUAN18_SPAWN) {return 0;}
+    if(n_particles_split < BH_YUAN18_WIND_SPAWN) {return 0;}
     if((n_particles_split % 2) != 0) {n_particles_split -= 1;}
     if(n_particles_split < 2) {return 0;}
-    int n0max = DMAX(20, (int)(3.*(BH_YUAN18_SPAWN)+0.1));
+    int n0max = DMAX(20, (int)(3.*(BH_YUAN18_WIND_SPAWN)+0.1));
     if((n0max % 2) != 0) {n0max += 1;}
     if(n_particles_split > n0max) {n_particles_split = n0max;}
 
@@ -1511,8 +1520,8 @@ int blackhole_yuan18_spawn_particle_wind_shell(int i, int num_already_spawned)
     if(norm > 0) {norm = 1.0/sqrt(norm); for(k=0;k<3;k++) {jy[k] *= norm;}} else {jy[0]=1; jy[1]=0; jy[2]=0;}
 
     double veldir[3], dpdir[3];
-    double v_magnitude_physical = (BPP(i).Yuan18_BH_reservoir_v_wind > 0) ? BPP(i).Yuan18_BH_reservoir_v_wind : BPP(i).Yuan18_BH_v_wind;
-    double eps_wind = (BPP(i).Yuan18_BH_reservoir_eps_wind > 0) ? BPP(i).Yuan18_BH_reservoir_eps_wind : BPP(i).Yuan18_BH_eps_wind;
+    double v_magnitude_physical = BPP(i).Yuan18_BH_v_wind;
+    double eps_wind = BPP(i).Yuan18_BH_eps_wind;
 
     for(spawn_index = 0; spawn_index < n_particles_split; spawn_index++)
     {
@@ -1612,7 +1621,7 @@ int blackhole_yuan18_spawn_particle_wind_shell(int i, int num_already_spawned)
 #ifndef BH_DEBUG_FIX_MDOT_MBH
         P[i].Mass -= P[j].Mass; /* total-mass conservation: BH particle mass donates to spawned wind cell */
 #endif
-        BPP(i).Yuan18_BH_reservoir_mass -= P[j].Mass;
+        BPP(i).Yuan18_BH_unspawned_wind_mass -= P[j].Mass;
 
 #ifdef METALS
         /* TODO(Yuan18): assign MACER/Yuan18 wind metallicity and hot/cold wind tracer fields instead of copying the cloned gas cell. */
@@ -1650,13 +1659,9 @@ int blackhole_yuan18_spawn_particle_wind_shell(int i, int num_already_spawned)
         force_add_star_to_tree(i0, j);
         n_spawned_actual++;
     }
-    if(BPP(i).Yuan18_BH_reservoir_mass <= 0)
+    if(BPP(i).Yuan18_BH_unspawned_wind_mass <= 0)
     {
-        BPP(i).Yuan18_BH_reservoir_mass = 0;
-        BPP(i).Yuan18_BH_reservoir_v_wind = 0;
-        BPP(i).Yuan18_BH_reservoir_eps_wind = 0;
-        BPP(i).Yuan18_BH_reservoir_mode_wind = 0;
-        for(k=0; k<3; k++) {BPP(i).Yuan18_BH_reservoir_J_dir[k] = 0;}
+        BPP(i).Yuan18_BH_unspawned_wind_mass = 0;
     }
     return n_spawned_actual;
 }
@@ -1673,22 +1678,21 @@ int spawn_bh_yuan18_wind_feedback(double *mass_spawned_out)
     {
         int nmax = (int)(0.99*All.MaxPart); if(All.MaxPart-20 < nmax) {nmax = All.MaxPart - 20;}
         int ptype_can_spawn = 0; if(P[i].Type == 5) {ptype_can_spawn = 1;}
-        if((NumPart + n_particles_split + 2*BH_YUAN18_SPAWN < nmax) && (ptype_can_spawn == 1))
+        if((NumPart + n_particles_split + 2*BH_YUAN18_WIND_SPAWN < nmax) && (ptype_can_spawn == 1))
         {
             int sink_eligible_to_spawn = 0;
-            int reservoir_mode_wind = BPP(i).Yuan18_BH_reservoir_mode_wind;
-            if(reservoir_mode_wind == 0) {reservoir_mode_wind = BPP(i).Yuan18_BH_mode_wind;} /* backward-compatible fallback for old restarts */
+            int reservoir_mode_wind = BPP(i).Yuan18_BH_mode_wind;
             double target_wind_mass = target_mass_for_wind_spawning(i);
-            double n_reservoir_yuan18 = (target_wind_mass > 0) ? (BPP(i).Yuan18_BH_reservoir_mass / target_wind_mass) : 0;
-            if(reservoir_mode_wind != 0 && n_reservoir_yuan18 >= BH_YUAN18_SPAWN) {sink_eligible_to_spawn = 1;}
+            double n_reservoir_yuan18 = (target_wind_mass > 0) ? (BPP(i).Yuan18_BH_unspawned_wind_mass / target_wind_mass) : 0;
+            if(reservoir_mode_wind != 0 && n_reservoir_yuan18 >= BH_YUAN18_WIND_SPAWN) {sink_eligible_to_spawn = 1;}
 #if defined(SINGLE_STAR_SINK_DYNAMICS)
             if(P[i].Type==5) {if((P[i].Mass <= 3.5*BPP(i).Sink_Formation_Mass) || (P[i].BH_Mass*UNIT_MASS_IN_SOLAR < 0.01)) {sink_eligible_to_spawn=0;}}
 #endif
             if(sink_eligible_to_spawn)
             {
-                double mass_before_spawn = BPP(i).Yuan18_BH_reservoir_mass;
+                double mass_before_spawn = BPP(i).Yuan18_BH_unspawned_wind_mass;
                 int n_spawned_this_bh = blackhole_yuan18_spawn_particle_wind_shell(i, n_particles_split);
-                if(n_spawned_this_bh > 0) {mass_spawned += mass_before_spawn - BPP(i).Yuan18_BH_reservoir_mass;}
+                if(n_spawned_this_bh > 0) {mass_spawned += mass_before_spawn - BPP(i).Yuan18_BH_unspawned_wind_mass;}
                 n_particles_split += n_spawned_this_bh;
             }
         }
@@ -1716,9 +1720,9 @@ int spawn_bh_yuan18_wind_feedback(double *mass_spawned_out)
 
 #ifdef BH_YUAN18_JET_SPAWN
 /* Sample one polar lobe on even indices and use an exact antipodal partner on
-   odd indices. BH_YUAN18_JET_SPAWN is the number of cells in each lobe. */
-void get_wind_spawn_direction_yuan18(int i, int num_spawned_this_call, int n_particles_split, int mode_wind,
-                                     double *ny, double *nz, double *veldir, double *dpdir)
+   odd indices. BH_YUAN18_JET_SPAWN is the minimum total paired batch size. */
+static void get_jet_spawn_direction_yuan18(int i, int num_spawned_this_call, int n_particles_split, int mode_wind,
+                                           double *ny, double *nz, double *veldir, double *dpdir)
 {
     int k;
     if(num_spawned_this_call % 2)
@@ -1777,38 +1781,37 @@ static double yuan18_spawn_launch_radius_physical(int i, int mode_wind)
 }
 
 
-/* Shared packet constructor. The fixed-count branch is used by the jet; the
-   target-mass branch preserves the intended batching rule for Yuan18 winds. */
-static int blackhole_yuan18_spawn_particle_shell(int i, int num_already_spawned, int mode_wind, int batch_min,
-                                                 int fixed_particle_count, double total_mass_in_outflow,
-                                                 double v_magnitude_physical, double eps_outflow,
-                                                 const char *launch_label)
+/* Match the native BH_WIND_SPAWN batch rule: drain all whole target masses up
+   to an even per-event cap, while retaining the unlaunched remainder. */
+static int yuan18_jet_spawn_count(int i)
 {
-    if(mode_wind <= 0 || batch_min <= 0 || total_mass_in_outflow <= 0 || v_magnitude_physical <= 0) {return 0;}
     double target_mass_yuan18 = target_mass_for_wind_spawning(i);
     if(target_mass_yuan18 <= 0) {return 0;}
+    int n_particles_split = (int) floor(BPP(i).Yuan18_BH_unspawned_jet_mass / target_mass_yuan18);
+    if(n_particles_split < BH_YUAN18_JET_SPAWN) {return 0;}
+    if((n_particles_split % 2) != 0) {n_particles_split -= 1;}
+    if(n_particles_split < BH_YUAN18_JET_SPAWN) {return 0;}
+    int n0max = DMAX(20, (int)(3.*BH_YUAN18_JET_SPAWN + 0.1));
+    if((n0max % 2) != 0) {n0max += 1;}
+    if(n_particles_split > n0max) {n_particles_split = n0max;}
+    return n_particles_split;
+}
 
-    int n_particles_split = batch_min;
-    if(fixed_particle_count > 0) {n_particles_split = fixed_particle_count;}
-    else
-    {
-        n_particles_split = (int) floor(total_mass_in_outflow / target_mass_yuan18);
-        if(n_particles_split < batch_min) {return 0;}
-    }
-    if(n_particles_split < 1) {return 0;}
-    double mass_of_new_particle = total_mass_in_outflow / (double)n_particles_split;
-    if(fixed_particle_count <= 0) {mass_of_new_particle = target_mass_yuan18;}
-    if(mass_of_new_particle <= 0) {return 0;}
 
-    if(((double)n_particles_split) * mass_of_new_particle > P[i].Mass)
-      {mass_of_new_particle = P[i].Mass / (double)n_particles_split;}
-    if(mass_of_new_particle <= 0) {return 0;}
+static int blackhole_yuan18_spawn_particle_shell(int i, int num_already_spawned, int mode_wind,
+                                                 const char *launch_label)
+{
+    if(BPP(i).Yuan18_BH_mode_wind != 1 || mode_wind != 4) {return 0;}
+    double target_mass_yuan18 = target_mass_for_wind_spawning(i);
+    double v_magnitude_physical = BPP(i).Yuan18_BH_v_jet;
+    double eps_outflow = BPP(i).Yuan18_BH_eps_jet;
+    int n_particles_split = yuan18_jet_spawn_count(i);
+    if(target_mass_yuan18 <= 0 || v_magnitude_physical <= 0 || n_particles_split <= 0) {return 0;}
+    double event_mass = ((double)n_particles_split) * target_mass_yuan18;
+    if(event_mass > P[i].Mass) {return 0;}
     if(NumPart + num_already_spawned + n_particles_split >= All.MaxPart)
     {
-        printf("On Task=%d with NumPart=%d (+N_spawned=%d), Yuan18 jet spawning exceeds All.MaxPart=%d. Raise PartAllocFactor or use more MPI tasks.\n",
-               ThisTask, NumPart, num_already_spawned, All.MaxPart);
-        fflush(stdout);
-        endrun(8888);
+        return 0;
     }
 
     double d_r = yuan18_wind_injection_radius_code(yuan18_spawn_launch_radius_physical(i, mode_wind));
@@ -1816,8 +1819,8 @@ static int blackhole_yuan18_spawn_particle_shell(int i, int num_already_spawned,
     int k, spawn_index, n_spawned_actual = 0;
     long j, bin = P[i].TimeBin;
 
-    double jz[3] = {BPP(i).Yuan18_BH_jet_step_J_dir[0], BPP(i).Yuan18_BH_jet_step_J_dir[1],
-                    BPP(i).Yuan18_BH_jet_step_J_dir[2]};
+    double jz[3] = {BPP(i).Yuan18_BH_J_dir[0], BPP(i).Yuan18_BH_J_dir[1],
+                    BPP(i).Yuan18_BH_J_dir[2]};
     double jznorm = jz[0]*jz[0] + jz[1]*jz[1] + jz[2]*jz[2];
     if(jznorm > 0)
     {
@@ -1835,14 +1838,32 @@ static int blackhole_yuan18_spawn_particle_shell(int i, int num_already_spawned,
     }
     else {jy[0]=1; jy[1]=0; jy[2]=0;}
 
-    double veldir[3], dpdir[3];
+    /* Resolve every launch direction and template cell before mutating particle,
+       tree, time-bin, sink-mass, or reservoir state. */
+    int template_cells[n_particles_split];
+    double target_positions[n_particles_split][3];
+    double velocity_directions[n_particles_split][3];
+    double veldir[3] = {0,0,0}, dpdir[3] = {0,0,0};
     for(spawn_index=0; spawn_index<n_particles_split; spawn_index++)
     {
-        get_wind_spawn_direction_yuan18(i, spawn_index, n_particles_split, mode_wind, jy, jz, veldir, dpdir);
-        double target_pos[3];
-        for(k=0; k<3; k++) {target_pos[k] = P[i].Pos[k] + dpdir[k]*d_r;}
-        int template_cell = yuan18_find_jet_template_cell(target_pos);
-        if(template_cell < 0) {continue;}
+        get_jet_spawn_direction_yuan18(i, spawn_index, n_particles_split, mode_wind, jy, jz, veldir, dpdir);
+        for(k=0; k<3; k++)
+        {
+            target_positions[spawn_index][k] = P[i].Pos[k] + dpdir[k]*d_r;
+            velocity_directions[spawn_index][k] = veldir[k];
+        }
+        template_cells[spawn_index] = yuan18_find_jet_template_cell(target_positions[spawn_index]);
+        if(template_cells[spawn_index] < 0) {return 0;}
+    }
+
+    for(spawn_index=0; spawn_index<n_particles_split; spawn_index++)
+    {
+        int template_cell = template_cells[spawn_index];
+        for(k=0; k<3; k++)
+        {
+            veldir[k] = velocity_directions[spawn_index][k];
+            dpdir[k] = (target_positions[spawn_index][k] - P[i].Pos[k]) / d_r;
+        }
 
         j = NumPart + num_already_spawned + n_spawned_actual;
         P[j] = P[template_cell];
@@ -1898,7 +1919,7 @@ static int blackhole_yuan18_spawn_particle_shell(int i, int num_already_spawned,
         P[j].ID_child_number = P[i].ID_child_number + P[i].ID_generation;
         P[i].ID_generation++;
         P[j].ID_generation = P[i].ID;
-        P[j].Mass = mass_of_new_particle;
+        P[j].Mass = target_mass_yuan18;
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
         SphP[j].MassTrue = P[j].Mass;
 #endif
@@ -1908,12 +1929,9 @@ static int blackhole_yuan18_spawn_particle_shell(int i, int num_already_spawned,
         for(k=0; k<3; k++) {SphP[j].Yuan18WindMomentum[k] = 0;}
         SphP[j].Yuan18WindLastMode = mode_wind;
 #endif
-#ifndef BH_DEBUG_FIX_MDOT_MBH
-        P[i].Mass -= P[j].Mass;
-#endif
         for(k=0; k<3; k++)
         {
-            P[j].Pos[k] = target_pos[k];
+            P[j].Pos[k] = target_positions[spawn_index][k];
             P[j].Vel[k] = P[i].Vel[k] + veldir[k]*v_magnitude_physical*All.cf_atime;
             SphP[j].VelPred[k] = P[j].Vel[k];
         }
@@ -1953,25 +1971,23 @@ static int blackhole_yuan18_spawn_particle_shell(int i, int num_already_spawned,
         n_spawned_actual++;
     }
 
-    BPP(i).Yuan18_BH_jet_step_mass = 0;
-    BPP(i).Yuan18_BH_jet_step_v_jet = 0;
-    BPP(i).Yuan18_BH_jet_step_eps_jet = 0;
-    for(k=0; k<3; k++) {BPP(i).Yuan18_BH_jet_step_J_dir[k] = 0;}
+    if(n_spawned_actual != n_particles_split) {endrun(8889);}
+    P[i].Mass -= event_mass;
+    BPP(i).Yuan18_BH_unspawned_jet_mass -= event_mass;
+    if(BPP(i).Yuan18_BH_unspawned_jet_mass < 0) {BPP(i).Yuan18_BH_unspawned_jet_mass = 0;}
+#ifdef BH_OUTPUT_MOREINFO
+    fprintf(FdBhWindDetails, "Yuan18-jet-reservoir-launch %.16g %llu %d %g %g %d\n",
+            All.Time, (unsigned long long)P[i].ID, n_spawned_actual, event_mass,
+            BPP(i).Yuan18_BH_unspawned_jet_mass, BPP(i).Yuan18_BH_mode_wind);
+    fflush(FdBhWindDetails);
+#endif
     return n_spawned_actual;
 }
 
 
 int blackhole_yuan18_spawn_particle_jet_shell(int i, int num_already_spawned)
 {
-    int mode_wind = 4, batch_min = BH_YUAN18_JET_SPAWN;
-    int fixed_particle_count = 2 * BH_YUAN18_JET_SPAWN;
-    double total_mass_in_outflow = BPP(i).Yuan18_BH_jet_step_mass;
-    double v_magnitude_physical = BPP(i).Yuan18_BH_jet_step_v_jet;
-    double eps_outflow = BPP(i).Yuan18_BH_jet_step_eps_jet;
-    return blackhole_yuan18_spawn_particle_shell(i, num_already_spawned, mode_wind, batch_min,
-                                                  fixed_particle_count, total_mass_in_outflow,
-                                                  v_magnitude_physical, eps_outflow,
-                                                  "Yuan18-jet-launch");
+    return blackhole_yuan18_spawn_particle_shell(i, num_already_spawned, 4, "Yuan18-jet-launch");
 }
 
 
@@ -1982,21 +1998,16 @@ int spawn_bh_yuan18_feedback(double *mass_spawned_out)
     for(i=FirstActiveParticle; i>=0; i=NextActiveParticle[i])
     {
         if(P[i].Type != 5) {continue;}
-        if(!(BPP(i).Yuan18_BH_jet_step_mass > 0)) {continue;}
-        int spawn_padding = 2 * BH_YUAN18_JET_SPAWN;
+        if(BPP(i).Yuan18_BH_mode_wind != 1) {continue;}
+        int spawn_padding = yuan18_jet_spawn_count(i);
+        if(spawn_padding <= 0) {continue;}
         int nmax = (int)(0.99*All.MaxPart);
         if(All.MaxPart - 20 < nmax) {nmax = All.MaxPart - 20;}
         if(NumPart + n_particles_split + spawn_padding >= nmax) {continue;}
-        double mass_before_spawn = BPP(i).Yuan18_BH_jet_step_mass;
+        double mass_before_spawn = BPP(i).Yuan18_BH_unspawned_jet_mass;
         int n_spawned_this_bh = blackhole_yuan18_spawn_particle_jet_shell(i, n_particles_split);
-        if(n_spawned_this_bh != spawn_padding)
-        {
-            printf("Task %d spawned %d Yuan18 jet cells for BH %llu; expected exactly %d.\n",
-                   ThisTask, n_spawned_this_bh, (unsigned long long)P[i].ID, spawn_padding);
-            fflush(stdout);
-            endrun(8889);
-        }
-        mass_spawned += mass_before_spawn;
+        if(n_spawned_this_bh > 0)
+          {mass_spawned += mass_before_spawn - BPP(i).Yuan18_BH_unspawned_jet_mass;}
         n_particles_split += n_spawned_this_bh;
     }
 

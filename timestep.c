@@ -1727,17 +1727,7 @@ void process_wake_ups(void)
 #ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
 	    integertime diagnostic_wakeup_old_dt_step = P[i].dt_step;
 #endif
-	    int force_active_on_next_sync = 0;
-#ifdef BH_YUAN18_JET_SPAWN
-	    /* Yuan18 jet particles are spawned after the hydro loop.  Their parent BH
-	       timebin is active at the spawn sync, but that does not mean the new gas
-	       cell has had a density/Hsml iteration.  Do not discard its wakeup here:
-	       it must be active at the next sync so recent_refinement_flag can force
-	       the density iteration before any hydro pair uses the new cell. */
-	    if(P[i].Type == 0 && P[i].ID == All.AGNWindID && SphP[i].recent_refinement_flag == 1)
-	      {force_active_on_next_sync = 1;}
-#endif
-	    if(TimeBinActive[binold] && !force_active_on_next_sync) {
+	    if(TimeBinActive[binold]) {
 #ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
             timestep_limiter_diagnostics_record_wakeup_outcome(i, binold, binold,
                                                                 diagnostic_wakeup_old_dt_step,
@@ -1799,8 +1789,7 @@ void process_wake_ups(void)
 #ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
                 timestep_limiter_diagnostics_record_wakeup_outcome(i, binold, bin,
                                                                     diagnostic_wakeup_old_dt_step,
-                                                                    P[i].dt_step, 1,
-                                                                    force_active_on_next_sync,
+                                                                    P[i].dt_step, 1, 0,
                                                                     "shortened_to_next_active_bin");
 #endif
 	    }
@@ -1809,8 +1798,7 @@ void process_wake_ups(void)
             {
                 timestep_limiter_diagnostics_record_wakeup_outcome(i, binold, bin,
                                                                     diagnostic_wakeup_old_dt_step,
-                                                                    diagnostic_wakeup_old_dt_step, 0,
-                                                                    force_active_on_next_sync,
+                                                                    diagnostic_wakeup_old_dt_step, 0, 0,
                                                                     "no_shorter_bin_available");
             }
 #endif

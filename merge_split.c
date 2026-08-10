@@ -18,9 +18,12 @@
 #define BH_SPAWNED_OUTFLOW_PARTICLES
 #endif
 
-#ifdef BH_SPAWNED_OUTFLOW_PARTICLES
+/* Only MFV can grow a spawned element through inter-cell mass flux. Fixed-mass MFM/SPH
+   outflows must remain on the kinematically protected low-mass merger path below. */
+#if defined(BH_SPAWNED_OUTFLOW_PARTICLES) && defined(HYDRO_MESHLESS_FINITE_VOLUME)
+#define BH_SPAWNED_OUTFLOW_MASS_PROMOTION
 #define MASS_THRESHOLD_FOR_WINDPROMO(i) (DMAX(5.*target_mass_for_wind_spawning(i),0.25*All.MaxMassForParticleSplit))
-#endif /* define a mass threshold for this model above which a 'hyper-element' has accreted enough to be treated as 'normal' */
+#endif /* variable-mass outflow element has accreted enough mass to be treated as normal */
 
 
 /*! This file contains the operations needed for merging/splitting gas particles/cells on-the-fly in the simulations.
@@ -60,7 +63,7 @@ int does_particle_need_to_be_merged(int i)
 #ifdef BH_DEBUG_SPAWN_JET_TEST
         MyFloat vr2 = (P[i].Vel[0]*P[i].Vel[0] + P[i].Vel[1]*P[i].Vel[1] + P[i].Vel[2]*P[i].Vel[2]) * All.cf_a2inv; // physical
         if(vr2 <= 0.01 * All.BAL_v_outflow*All.BAL_v_outflow) {return 1;} else {return 0;} // merge only if velocity condition satisfied, even if surrounded by more massive particles //
-#else
+#elif defined(BH_SPAWNED_OUTFLOW_MASS_PROMOTION)
         if(P[i].Mass >= MASS_THRESHOLD_FOR_WINDPROMO(i)*target_mass_renormalization_factor_for_mergesplit(i,0)) {return 1;}
 #endif
     }
@@ -378,10 +381,14 @@ void merge_and_split_particles(void)
 #ifdef BH_SPAWNED_OUTFLOW_PARTICLES
                         if(P[i].ID==All.AGNWindID && P[i].Type==0)
                         {
+#ifdef BH_SPAWNED_OUTFLOW_MASS_PROMOTION
                             if(P[i].Mass>=MASS_THRESHOLD_FOR_WINDPROMO(i))
                             {
                                 if((P[j].ID != All.AGNWindID) || (P[j].Mass >= MASS_THRESHOLD_FOR_WINDPROMO(j))) {do_allow_merger *= 1;} else {do_allow_merger = 0;}
-                            } else if(do_allow_merger) {
+                            }
+                            else
+#endif
+                            if(do_allow_merger) {
                                 double v2_tmp=0,vr_tmp=0; int ktmp=0; for(ktmp=0;ktmp<3;ktmp++) {v2_tmp+=(P[i].Vel[ktmp]-P[j].Vel[ktmp])*(P[i].Vel[ktmp]-P[j].Vel[ktmp]); vr_tmp+=(P[i].Vel[ktmp]-P[j].Vel[ktmp])*(P[i].Pos[ktmp]-P[j].Pos[ktmp]);}
                                 if(vr_tmp > 0) {do_allow_merger = 0;}
                                 if(v2_tmp > 0) {v2_tmp=sqrt(v2_tmp*All.cf_a2inv);} else {v2_tmp=0;}

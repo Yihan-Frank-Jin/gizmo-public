@@ -25,6 +25,9 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
     MyLongDouble accreted_Mass;
     MyLongDouble accreted_BH_Mass;
     MyLongDouble accreted_BH_Mass_alphadisk;
+#ifdef BH_YUAN18_JET_SPAWN
+    MyLongDouble accreted_Yuan18_jet_reservoir_mass;
+#endif
 #if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
     MyLongDouble BH_AccretionDeficit;
 #endif
@@ -166,7 +169,7 @@ double target_mass_for_wind_spawning(int i);
 #define YUAN18_COS_ANG_SUP  0.8660  /* cos(30 deg): inner (smallest |cos theta|) bound of SUP polar caps */
 #define YUAN18_COS_ANG_JET 0.984807753012208 /* cos(10 deg): yuan18.cpp default jet polar cap */
 #endif
-#if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
+#ifdef BH_YUAN18_WIND_SPAWN
 void get_wind_spawn_direction_yuan18(int i, int num_spawned_this_call, int n_particles_split, int mode_wind,
                                      double *ny, double *nz,
                                      double *veldir, double *dpdir);

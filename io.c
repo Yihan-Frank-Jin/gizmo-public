@@ -1228,6 +1228,28 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 #endif
             break;
 
+        case IO_YUAN18_BH_MODE_WIND:
+#if defined(BH_YUAN18_ACCRETION) && defined(OUTPUT_YUAN18_BH_STATE)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *ip_int++ = BPP(pindex).Yuan18_BH_mode_wind;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_YUAN18_JET_RESERVOIR_MASS:
+#if defined(BH_YUAN18_JET_SPAWN) && defined(OUTPUT_YUAN18_BH_STATE)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) BPP(pindex).Yuan18_BH_unspawned_jet_mass;
+                    n++;
+                }
+#endif
+            break;
+
         case IO_R_PROTOSTAR:
             break;
 
@@ -1946,6 +1968,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_EOSCOMP:
         case IO_STAGE_PROTOSTAR:
         case IO_YUAN18_WIND_LASTMODE:
+        case IO_YUAN18_BH_MODE_WIND:
             bytes_per_blockelement = sizeof(int);
             break;
             
@@ -1999,6 +2022,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_YUAN18_BH_MASS_DISK:
         case IO_YUAN18_BH_MDOT_BONDI:
         case IO_YUAN18_BH_BONDI_RADIUS:
+        case IO_YUAN18_JET_RESERVOIR_MASS:
         case IO_R_PROTOSTAR:
         case IO_MASS_D_PROTOSTAR:
         case IO_ZAMS_MASS:
@@ -2237,6 +2261,7 @@ int get_datatype_in_block(enum iofields blocknr)
         case IO_EOSCOMP:
         case IO_STAGE_PROTOSTAR:
         case IO_YUAN18_WIND_LASTMODE:
+        case IO_YUAN18_BH_MODE_WIND:
             typekey = 0;		/* native int */
             break;
             
@@ -2329,6 +2354,8 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_YUAN18_BH_MASS_DISK:
         case IO_YUAN18_BH_MDOT_BONDI:
         case IO_YUAN18_BH_BONDI_RADIUS:
+        case IO_YUAN18_BH_MODE_WIND:
+        case IO_YUAN18_JET_RESERVOIR_MASS:
         case IO_R_PROTOSTAR:
         case IO_MASS_D_PROTOSTAR:
         case IO_ZAMS_MASS:
@@ -2708,6 +2735,8 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_YUAN18_BH_MASS_DISK:
         case IO_YUAN18_BH_MDOT_BONDI:
         case IO_YUAN18_BH_BONDI_RADIUS:
+        case IO_YUAN18_BH_MODE_WIND:
+        case IO_YUAN18_JET_RESERVOIR_MASS:
         case IO_R_PROTOSTAR:
         case IO_MASS_D_PROTOSTAR:
         case IO_ZAMS_MASS:
@@ -3176,7 +3205,14 @@ int blockpresent(enum iofields blocknr)
         case IO_YUAN18_BH_MASS_DISK:
         case IO_YUAN18_BH_MDOT_BONDI:
         case IO_YUAN18_BH_BONDI_RADIUS:
+        case IO_YUAN18_BH_MODE_WIND:
 #if defined(BH_YUAN18_ACCRETION) && defined(OUTPUT_YUAN18_BH_STATE)
+            return 1;
+#endif
+            break;
+
+        case IO_YUAN18_JET_RESERVOIR_MASS:
+#if defined(BH_YUAN18_JET_SPAWN) && defined(OUTPUT_YUAN18_BH_STATE)
             return 1;
 #endif
             break;
@@ -3660,6 +3696,12 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_YUAN18_BH_BONDI_RADIUS:
             strncpy(label, "Y18R", 4);
             break;
+        case IO_YUAN18_BH_MODE_WIND:
+            strncpy(label, "Y18O", 4);
+            break;
+        case IO_YUAN18_JET_RESERVOIR_MASS:
+            strncpy(label, "Y18J", 4);
+            break;
         case IO_R_PROTOSTAR:
             strncpy(label, "RPST", 4);
             break;
@@ -4123,6 +4165,12 @@ void get_dataset_name(enum iofields blocknr, char *buf)
             break;
         case IO_YUAN18_BH_BONDI_RADIUS:
             strcpy(buf, "BH_Yuan18_BondiRadius");
+            break;
+        case IO_YUAN18_BH_MODE_WIND:
+            strcpy(buf, "BH_Yuan18_ModeWind");
+            break;
+        case IO_YUAN18_JET_RESERVOIR_MASS:
+            strcpy(buf, "BH_Yuan18_JetReservoirMass");
             break;
         case IO_R_PROTOSTAR:
             strcpy(buf, "ProtoStellarRadius_inSolar");

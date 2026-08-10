@@ -304,8 +304,8 @@ void calculate_non_standard_physics(void)
         }
         if((ThisTask == 0) && (yuan18_particles_spawned > 0))
         {
-            printf("[Yuan18-jet-spawn] spawned_particles=%d spawned_mass=%g, particles_per_hot_bh_timestep=%d\n",
-                   yuan18_particles_spawned, yuan18_mass_spawned, 2 * BH_YUAN18_JET_SPAWN);
+            printf("[Yuan18-jet-spawn] spawned_particles=%d spawned_mass=%g, minimum_batch=%d\n",
+                   yuan18_particles_spawned, yuan18_mass_spawned, BH_YUAN18_JET_SPAWN);
             fflush(stdout);
         }
 #endif

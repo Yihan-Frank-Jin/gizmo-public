@@ -490,6 +490,7 @@ void init(void)
                 BPP(i).Yuan18_BH_Mass_fall    = 0;
                 BPP(i).Yuan18_BH_Mass_disk    = 0;
                 BPP(i).Yuan18_BH_Mdot_Bondi   = 0;
+                BPP(i).Yuan18_BH_mode_wind    = 0;
 #endif
 #if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
                 BPP(i).Yuan18_BH_r_inject  = 0;
@@ -499,16 +500,12 @@ void init(void)
                 BPP(i).Yuan18_BH_unspawned_wind_mass = 0;
                 BPP(i).Yuan18_BH_v_wind = 0;
                 BPP(i).Yuan18_BH_eps_wind = 0;
-                BPP(i).Yuan18_BH_mode_wind = 0;
 #endif
 #ifdef BH_YUAN18_JET_SPAWN
                 BPP(i).Yuan18_BH_mdot_jet = 0;
                 BPP(i).Yuan18_BH_v_jet = 0;
                 BPP(i).Yuan18_BH_eps_jet = 0;
-                BPP(i).Yuan18_BH_jet_step_mass = 0;
-                BPP(i).Yuan18_BH_jet_step_v_jet = 0;
-                BPP(i).Yuan18_BH_jet_step_eps_jet = 0;
-                BPP(i).Yuan18_BH_jet_step_J_dir[0] = 0; BPP(i).Yuan18_BH_jet_step_J_dir[1] = 0; BPP(i).Yuan18_BH_jet_step_J_dir[2] = 0;
+                BPP(i).Yuan18_BH_unspawned_jet_mass = 0;
 #endif
             }
 #ifdef BH_INTERACT_ON_GAS_TIMESTEP
@@ -517,6 +514,24 @@ void init(void)
 #endif 
 #if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
             if(RestartFlag != 1) {BPP(i).BH_AccretionDeficit = 0;}
+#endif
+#if defined(BH_YUAN18_ACCRETION) && defined(NO_YUAN18_BH_STATE_IN_ICS)
+            if(RestartFlag == 2)
+            {
+                BPP(i).Yuan18_BH_Bondi_Radius = 0;
+                BPP(i).Yuan18_BH_Mass_fall = 0;
+                BPP(i).Yuan18_BH_Mass_disk = 0;
+                BPP(i).Yuan18_BH_Mdot_Bondi = 0;
+                BPP(i).Yuan18_BH_mode_wind = 0;
+#ifdef BH_YUAN18_JET_SPAWN
+                BPP(i).Yuan18_BH_unspawned_jet_mass = 0;
+#endif
+            }
+#elif defined(BH_YUAN18_ACCRETION) && defined(NO_YUAN18_BH_MODE_IN_ICS)
+            if(RestartFlag == 2) {BPP(i).Yuan18_BH_mode_wind = 0;}
+#endif
+#if defined(BH_YUAN18_JET_SPAWN) && defined(NO_YUAN18_JET_RESERVOIR_IN_ICS)
+            if(RestartFlag == 2) {BPP(i).Yuan18_BH_unspawned_jet_mass = 0;}
 #endif
         }
 #endif
