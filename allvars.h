@@ -430,9 +430,55 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 
 #if defined(SINGLE_STAR_FB_JETS) || ((defined(SINGLE_STAR_FB_WINDS) || defined(SINGLE_STAR_FB_SNE)) && defined(FLAG_NOT_IN_PUBLIC_CODE))
 #define BH_WIND_SPAWN (2) // leverage the BHFB model already developed within the FIRE-BHs framework. gives accurate launching of arbitrarily-structured jets.
-#if !defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM) 
+#if !defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
 #define MAINTAIN_TREE_IN_REARRANGE // don't rebuild the domains/tree every time a particle is spawned - salvage the existing one by redirecting pointers as needed
 #endif
+#endif
+
+#if defined(BH_YUAN18_JET_SPAWN_EVERY_TIMESTEP) && !defined(BH_YUAN18_JET_SPAWN)
+#error "BH_YUAN18_JET_SPAWN_EVERY_TIMESTEP requires BH_YUAN18_JET_SPAWN."
+#endif
+#if defined(BH_YUAN18_FIORE_COLD_WIND) && (!defined(BLACK_HOLES) || !defined(BH_YUAN18_ACCRETION))
+#error "BH_YUAN18_FIORE_COLD_WIND requires BLACK_HOLES and BH_YUAN18_ACCRETION."
+#endif
+#if defined(BH_YUAN18_JET_SPAWN) && !defined(BH_YUAN18_ACCRETION)
+#error "BH_YUAN18_JET_SPAWN requires BH_YUAN18_ACCRETION (hot-mode mdot_bh, r_inject, and launch-axis state come from the Yuan18 accretion pipeline)."
+#endif
+#if defined(BH_YUAN18_RADIATION) && (!defined(BLACK_HOLES) || !defined(BH_YUAN18_ACCRETION))
+#error "BH_YUAN18_RADIATION requires BLACK_HOLES and BH_YUAN18_ACCRETION."
+#endif
+#if defined(BH_YUAN18_JET_SPAWN) && ((BH_YUAN18_JET_SPAWN < 2) || ((BH_YUAN18_JET_SPAWN % 2) != 0))
+#error "BH_YUAN18_JET_SPAWN must be an even integer at least 2 (the minimum total number of cells in one antipodally paired jet launch)."
+#endif
+#if defined(BH_YUAN18_WIND_SPAWN) && !defined(BH_YUAN18_ACCRETION)
+#error "BH_YUAN18_WIND_SPAWN requires BH_YUAN18_ACCRETION (mode determination, mdot_wind, v_wind, eps_wind, and Bondi launch radius come from the Yuan18 accretion pipeline)."
+#endif
+#if defined(BH_YUAN18_WIND_CONTINUOUS) && !defined(BH_YUAN18_ACCRETION)
+#error "BH_YUAN18_WIND_CONTINUOUS requires BH_YUAN18_ACCRETION (mode determination, mdot_wind, v_wind, eps_wind, and Bondi launch radius come from the Yuan18 accretion pipeline)."
+#endif
+#if defined(BH_YUAN18_WIND_SPAWN) && defined(BH_YUAN18_WIND_CONTINUOUS)
+#error "BH_YUAN18_WIND_SPAWN and BH_YUAN18_WIND_CONTINUOUS are mutually exclusive: enable exactly one Yuan18 wind-injection mechanism per build."
+#endif
+#if defined(BH_WIND_SPAWN) && (defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN))
+#error "BH_WIND_SPAWN and Yuan18 spawn feedback are mutually exclusive: enable exactly one spawn-injection mechanism per build."
+#endif
+#if defined(OUTPUT_YUAN18_BH_STATE) && !defined(BH_YUAN18_ACCRETION)
+#error "OUTPUT_YUAN18_BH_STATE requires BH_YUAN18_ACCRETION."
+#endif
+#if defined(NO_YUAN18_BH_STATE_IN_ICS) && !defined(OUTPUT_YUAN18_BH_STATE)
+#error "NO_YUAN18_BH_STATE_IN_ICS is only meaningful with OUTPUT_YUAN18_BH_STATE enabled."
+#endif
+#if defined(NO_YUAN18_BH_MODE_IN_ICS) && !defined(OUTPUT_YUAN18_BH_STATE)
+#error "NO_YUAN18_BH_MODE_IN_ICS is only meaningful with OUTPUT_YUAN18_BH_STATE enabled."
+#endif
+#if defined(NO_YUAN18_BH_LUMINOSITY_IN_ICS) && (!defined(OUTPUT_YUAN18_BH_STATE) || !defined(BH_YUAN18_RADIATION))
+#error "NO_YUAN18_BH_LUMINOSITY_IN_ICS requires OUTPUT_YUAN18_BH_STATE and BH_YUAN18_RADIATION."
+#endif
+#if defined(NO_YUAN18_JET_RESERVOIR_IN_ICS) && (!defined(OUTPUT_YUAN18_BH_STATE) || !defined(BH_YUAN18_JET_SPAWN))
+#error "NO_YUAN18_JET_RESERVOIR_IN_ICS requires OUTPUT_YUAN18_BH_STATE and BH_YUAN18_JET_SPAWN."
+#endif
+#if defined(OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS) && !defined(WAKEUP)
+#error "OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS currently requires the standard WAKEUP timestep bookkeeping."
 #endif
 
 #if defined(SINGLE_STAR_FB_LOCAL_RP) // use standard angle-weighted local coupling to impart photon momentum from stars
@@ -613,7 +659,7 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #endif
 
 #ifdef RT_SOURCE_INJECTION
-#if defined(GALSF) && !defined(RT_INJECT_PHOTONS_DISCRETELY)
+#if (defined(GALSF) || defined(BH_YUAN18_RADIATION)) && !defined(RT_INJECT_PHOTONS_DISCRETELY)
 #define RT_INJECT_PHOTONS_DISCRETELY // modules will not work correctly with differential timestepping with point sources without discrete injection
 #endif
 #if defined(RT_INJECT_PHOTONS_DISCRETELY) && defined(RT_RAD_PRESSURE_FORCES) && (defined(RT_ENABLE_R15_GRADIENTFIX) || defined(GALSF))
@@ -655,6 +701,31 @@ extern struct Chimes_depletion_data_structure *ChimesDepletionData;
 #endif
 #ifndef RT_SOURCES
 #define RT_SOURCES 1+2+4+8+16+32 // default to allowing all types to act as sources //
+#endif
+
+#if defined(BH_YUAN18_RADIATION) && !defined(RADTRANSFER) && !defined(RT_USE_GRAVTREE)
+#error "BH_YUAN18_RADIATION requires a native GIZMO radiation method (RADTRANSFER or RT_USE_GRAVTREE)."
+#endif
+#if defined(BH_YUAN18_RADIATION) && (((RT_SOURCES) & 32) == 0)
+#error "BH_YUAN18_RADIATION requires RT_SOURCES to include type-5 black holes (bit 32)."
+#endif
+#if defined(BH_YUAN18_RADIATION) && !defined(RT_INFRARED) && !defined(RT_OPTICAL_NIR) && !defined(RT_NUV) && !defined(RT_PHOTOELECTRIC) && !defined(RT_LYMAN_WERNER) && !defined(RT_CHEM_PHOTOION) && !defined(RT_SOFT_XRAY) && !defined(RT_HARD_XRAY)
+#error "BH_YUAN18_RADIATION requires at least one native AGN radiation band."
+#endif
+
+#if defined(RT_ABSORBING_OUTFLOW_BOUNDARY)
+#if !defined(RT_M1) || !defined(RT_SOLVER_EXPLICIT) || !defined(RT_EVOLVE_ENERGY) || !defined(RT_EVOLVE_FLUX)
+#error "RT_ABSORBING_OUTFLOW_BOUNDARY currently requires the explicit M1 solver."
+#endif
+#if defined(BOX_PERIODIC)
+#error "RT_ABSORBING_OUTFLOW_BOUNDARY requires a non-periodic radiation domain."
+#endif
+#if !defined(BOX_OUTFLOW_X) && !defined(BOX_OUTFLOW_Y) && !defined(BOX_OUTFLOW_Z)
+#error "RT_ABSORBING_OUTFLOW_BOUNDARY requires at least one BOX_OUTFLOW_* face."
+#endif
+#if (RT_ABSORBING_OUTFLOW_BOUNDARY <= 0)
+#error "RT_ABSORBING_OUTFLOW_BOUNDARY must be a positive width in local gas smoothing lengths."
+#endif
 #endif
 
 /* cooling must be enabled for RT cooling to function */
@@ -1719,7 +1790,7 @@ extern double TimeBin_BH_mass[TIMEBINS];
 extern double TimeBin_BH_dynamicalmass[TIMEBINS];
 extern double TimeBin_BH_Mdot[TIMEBINS];
 extern double TimeBin_BH_Medd[TIMEBINS];
-#if defined(BH_PHOTONMOMENTUM) || defined(BH_WIND_CONTINUOUS) || defined(RT_BH_ANGLEWEIGHT_PHOTON_INJECTION)
+#if defined(BH_PHOTONMOMENTUM) || defined(BH_WIND_CONTINUOUS) || defined(BH_YUAN18_WIND_CONTINUOUS) || defined(RT_BH_ANGLEWEIGHT_PHOTON_INJECTION)
 #define BH_CALC_LOCAL_ANGLEWEIGHTS
 #endif
 #if defined(BH_GRAVCAPTURE_GAS) || defined(BH_GRAVACCRETION) || defined(BH_GRAVCAPTURE_NONGAS) || defined(BH_CALC_LOCAL_ANGLEWEIGHTS) || defined(BH_DYNFRICTION) || defined(BH_EXCISION_NONGAS)
@@ -1777,6 +1848,9 @@ extern int N_stars;
 #ifdef BH_WIND_SPAWN
 extern double Max_Unspawned_MassUnits_fromSink;
 #endif
+#ifdef BH_YUAN18_WIND_SPAWN
+extern double Max_Yuan18_WindReservoirMassUnits_fromSink;
+#endif
 
 extern long long Ntype[6];	/*!< total number of particles of each type */
 extern int NtypeLocal[6];	/*!< local number of particles of each type */
@@ -1817,6 +1891,9 @@ extern double rt_ion_sigma_HeII[N_RT_FREQ_BINS];
 extern double rt_ion_G_HI[N_RT_FREQ_BINS];
 extern double rt_ion_G_HeI[N_RT_FREQ_BINS];
 extern double rt_ion_G_HeII[N_RT_FREQ_BINS];
+#endif
+#ifdef RT_ABSORBING_OUTFLOW_BOUNDARY
+extern double RT_EscapedEnergyPending[N_RT_FREQ_BINS];
 #endif
 
 
@@ -1879,6 +1956,9 @@ extern FILE
 #endif
 #endif
  *FdCPU;        /*!< file handle for cpu.txt log-file. */
+#ifdef RT_ABSORBING_OUTFLOW_BOUNDARY
+extern FILE *FdRTEscape;   /*!< compact radiation-escape log, retained in reduced-I/O runs */
+#endif
 #ifdef GALSF
 extern FILE *FdSfr;		/*!< file handle for sfr.txt log-file. */
 #endif
@@ -1903,7 +1983,7 @@ extern FILE *FdBhFormationDetails;
 extern FILE *FdBlackHolesDetails;
 #ifdef BH_OUTPUT_MOREINFO
 extern FILE *FdBhMergerDetails;
-#ifdef BH_WIND_KICK
+#if defined(BH_WIND_KICK) || defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
 extern FILE *FdBhWindDetails;
 #endif
 #endif
@@ -2153,6 +2233,9 @@ extern struct global_data_all_processes
 #ifdef RADTRANSFER
     integertime Radiation_Ti_begstep;
     integertime Radiation_Ti_endstep;
+#endif
+#ifdef RT_ABSORBING_OUTFLOW_BOUNDARY
+    double RT_EscapedEnergy[N_RT_FREQ_BINS];
 #endif
 #ifdef RT_EVOLVE_INTENSITIES
     double Rad_Intensity_Direction[N_RT_INTENSITY_BINS][3];
@@ -2422,6 +2505,10 @@ extern struct global_data_all_processes
   double Cell_Spawn_Mass_ratio_MS;        /*!< target mass for feedback particles to be spawned for main sequence winds in STARFORGE*/
 #endif
 #endif
+#if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
+  double BAL_wind_particle_mass;        /*!< target mass for spawned Yuan18 outflow particles */
+  MyIDType AGNWindID;                   /*!< unique ID assigned to spawned Yuan18 outflow particles */
+#endif
 #ifdef BH_SEED_FROM_FOF
   double MinFoFMassForNewSeed;      /*!< Halo mass required before new seed is put in */
 #endif
@@ -2512,10 +2599,10 @@ extern ALIGN(32) struct particle_data
     short int TimeBin;
     MyIDType ID;                    /*! < unique ID of particle (assigned at beginning of the simulation) */
     MyIDType ID_child_number;       /*! < child number for particles 'split' from main (retain ID, get new child number) */
-#ifndef BH_WIND_SPAWN
+#if !defined(BH_WIND_SPAWN) && !defined(BH_YUAN18_JET_SPAWN) && !defined(BH_YUAN18_WIND_SPAWN)
     int ID_generation;              /*! < generation (need to track for particle-splitting to ensure each 'child' gets a unique child number */
 #else
-    MyIDType ID_generation;
+    MyIDType ID_generation;          /*! < widened to MyIDType when any spawn pipeline is active so spawned particles can store the parent's full MyIDType ID */
 #endif
 
     integertime Ti_begstep;         /*!< marks start of current timestep of particle on integer timeline */
@@ -2730,6 +2817,31 @@ extern ALIGN(32) struct particle_data
 #ifdef BH_REPOSITION_ON_POTMIN
     MyFloat BH_MinPotPos[3];
     MyFloat BH_MinPot;
+#endif
+#ifdef BH_YUAN18_ACCRETION
+    MyFloat Yuan18_BH_Mass_fall;    /* free-fall reservoir [code mass; mass is physical in comoving integrations] */
+    MyFloat Yuan18_BH_Mass_disk;    /* unresolved disk reservoir [code mass] */
+    MyFloat Yuan18_BH_Mdot_Bondi;   /* physical inflow rate [code mass / physical code time] */
+    MyFloat Yuan18_BH_Bondi_Radius; /* weighted Bondi radius from previous timestep [physical]; used as search-radius floor in bondi_radius_loop */
+    int     Yuan18_BH_mode_wind;    /* most recently evaluated Yuan18 wind mode: 0=NONE, 1=HOT, 2=SUB, 3=SUP */
+#ifdef BH_YUAN18_RADIATION
+    MyFloat Yuan18_BH_L_rad;        /* persistent physical bolometric luminosity [code energy / physical code time] */
+#endif
+#endif
+#if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
+    MyFloat Yuan18_BH_r_inject;           /* current Yuan18 launch/coupling radius [physical code units]: weighted Bondi radius for spawn outflows */
+    MyFloat Yuan18_BH_J_dir[3];           /* normalized current Yuan18 outflow axis: fixed z-axis in debug builds, otherwise BH_Specific_AngMom only. Zero vector means sampler falls back to z-axis */
+#endif
+#ifdef BH_YUAN18_WIND_SPAWN
+    MyFloat Yuan18_BH_unspawned_wind_mass; /* accumulated Yuan18 wind mass waiting for the next spawn event [code mass] */
+    MyFloat Yuan18_BH_v_wind;             /* current Yuan18 wind launch speed [physical code units] */
+    MyFloat Yuan18_BH_eps_wind;           /* current Yuan18 wind specific internal energy [code units] */
+#endif
+#ifdef BH_YUAN18_JET_SPAWN
+    MyFloat Yuan18_BH_mdot_jet;           /* current physical hot-mode jet mass rate [code mass / physical code time] */
+    MyFloat Yuan18_BH_v_jet;              /* current jet launch speed [physical code units]: 0.3c in yuan18.cpp */
+    MyFloat Yuan18_BH_eps_jet;            /* current jet specific internal energy [code units]: zero in yuan18.cpp */
+    MyFloat Yuan18_BH_unspawned_jet_mass; /* accumulated HOT-mode jet mass waiting for a paired target-mass launch [code mass] */
 #endif
 #endif  /* if defined(BLACK_HOLES) */
 #ifdef BH_SEED_FROM_LOCALGAS_TOTALMENCCRITERIA
@@ -3066,6 +3178,12 @@ extern struct gas_cell_data
 #if defined(BH_THERMALFEEDBACK)
     MyDouble Injected_BH_Energy;
 #endif
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+    MyDouble Yuan18WindMass;          /*!< cumulative Yuan18 continuous wind mass coupled to this gas cell [code mass] */
+    MyDouble Yuan18WindEnergy;        /*!< cumulative physical Yuan18 wind material energy [code mass * physical velocity^2] */
+    MyDouble Yuan18WindMomentum[3];   /*!< cumulative physical Yuan18 wind momentum relative to the BH [code mass * physical velocity] */
+    int      Yuan18WindLastMode;      /*!< latest Yuan18 continuous wind mode coupled to this gas cell */
+#endif
 
 #ifdef COOLING
 #if !defined(COOLING_OPERATOR_SPLIT)
@@ -3267,6 +3385,7 @@ extern struct gas_cell_data
     MyFloat NetHeatingRateQ;
     MyFloat HydroHeatingRate;
     MyFloat MetalCoolingRate;
+    MyFloat ComptonHeatingCoolingRate; /* signed Lambda_Compton: negative=heating, positive=cooling */
 #endif
 
 #if defined(COOLING) && defined(COOL_GRACKLE)
@@ -3588,6 +3707,13 @@ enum iofields
   IO_BHMASSALPHA,
   IO_BH_ANGMOM,
   IO_BHMDOT,
+  IO_YUAN18_BH_MASS_FALL,
+  IO_YUAN18_BH_MASS_DISK,
+  IO_YUAN18_BH_MDOT_BONDI,
+  IO_YUAN18_BH_BONDI_RADIUS,
+  IO_YUAN18_BH_MODE_WIND,
+  IO_YUAN18_BH_LUMINOSITY,
+  IO_YUAN18_JET_RESERVOIR_MASS,
   IO_SINKDUSTMASSACC,
   IO_R_PROTOSTAR,
   IO_MASS_D_PROTOSTAR,
@@ -3609,11 +3735,16 @@ enum iofields
   IO_IDEN,
   IO_INIB,
   IO_UNSPMASS,
+  IO_YUAN18_WIND_MASS,
+  IO_YUAN18_WIND_ENERGY,
+  IO_YUAN18_WIND_MOMENTUM,
+  IO_YUAN18_WIND_LASTMODE,
   IO_CRATE,
   IO_HRATE,
   IO_NHRATE,
   IO_HHRATE,
   IO_MCRATE,
+  IO_COMPTONRATE,
   IO_DTENTR,
   IO_TSTP,
   IO_BFLD,

@@ -28,6 +28,7 @@
  *   code standards and be properly multi-threaded.
  */
 
+
 #ifdef BLACK_HOLES // top-level flag [needs to be here to prevent compiler breaking when this is not active] //
 
 
@@ -48,6 +49,15 @@ void blackhole_accretion(void)
 #if defined(BH_GRAVACCRETION) && (BH_GRAVACCRETION == 0)
     blackhole_environment_second_loop();    /* Here we compute quantities that require knowledge of previous environment variables --> Bulge-Disk kinematic decomposition for gravitational torque accretion  */
 #endif
+#ifdef BH_YUAN18_ACCRETION
+    /* blackhole_bondi_radius_loop MUST come after blackhole_environment_loop:
+     * it traverses all gas particles and computes the global inflow-weighted Bondi radius.
+     * blackhole_mass_flux_loop MUST come after this loop: it reads
+     * BondiRadius_WeightedSum / Bondi_WeightSum to locate the integration shell. */
+    blackhole_bondi_radius_loop();
+    /* This loop calculates the mass flux across the dynamically calculated Bondi radius */
+    blackhole_mass_flux_loop(); 
+#endif
     /*----------------------------------------------------------------------
      Now do a first set of local operations based on BH environment calculation:
      calculate mdot, dynamical friction, and other 'BH-centric' operations.
@@ -60,6 +70,11 @@ void blackhole_accretion(void)
      Use the above info to determine the weight functions for feedback
      ----------------------------------------------------------------------*/
     blackhole_feed_loop();       /* BH mergers and gas/star/dm accretion events are evaluated - P[j].SwallowID's are set */
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+    /* Use a separate read-only pass so continuous-wind ownership is normalized
+       against the final gas recipient set after every BH has assigned SwallowID. */
+    blackhole_yuan18_wind_normalization_loop();
+#endif
     /*----------------------------------------------------------------------
      Now we do a THIRD pass over the particles, and
      this is where we can do the actual 'swallowing' operations
@@ -186,6 +201,119 @@ double bh_angleweight_localcoupling(int j, double cos_theta, double r, double H_
 }
 
 
+#if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS)
+double yuan18_wind_injection_radius_code(double r_inject_physical)
+{
+    if(r_inject_physical <= 0) return 0;
+    return yuan18_code_length_from_physical(r_inject_physical);
+}
+#endif
+
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+void yuan18_wind_surface_direction(int q, double *dir)
+{
+    int n_samples = YUAN18_BONDI_FLUX_N_SAMPLES;
+    int n_pairs = n_samples / 2;
+    if(n_pairs < 1) {n_pairs = 1;}
+    int q_pair = q;
+    int flip = 0;
+    if(q_pair >= n_pairs)
+    {
+        q_pair -= n_pairs;
+        flip = 1;
+    }
+    if(q_pair >= n_pairs) {q_pair = n_pairs - 1;}
+
+    double z = 1.0 - (((double)q_pair + 0.5) / (double)n_pairs);
+    double phi = 2.0 * M_PI * ((double)q_pair) * YUAN18_GOLDEN_RATIO_CONJUGATE;
+    double r_xy = sqrt(DMAX(0.0, 1.0 - z*z));
+    dir[0] = r_xy * cos(phi);
+    dir[1] = r_xy * sin(phi);
+    dir[2] = z;
+    if(flip)
+    {
+        dir[0] = -dir[0];
+        dir[1] = -dir[1];
+        dir[2] = -dir[2];
+    }
+}
+
+double yuan18_wind_angular_weight(double cos_theta, int mode_wind)
+{
+    if(mode_wind <= 0) return 0;
+    double mu = fabs(cos_theta);
+    if(mode_wind == 1) /* HOT: biconical shell at 30-70 degrees from the wind axis */
+    {
+        if(mu < YUAN18_COS_ANG2_HOT || mu > YUAN18_COS_ANG1_HOT) return 0;
+        return 1.0;
+    }
+    if(mode_wind == 2) /* SUB: all-sky cos^2(theta) weighting */
+    {
+        return mu * mu;
+    }
+    if(mode_wind == 3) /* SUP: polar caps within 30 degrees */
+    {
+        if(mu < YUAN18_COS_ANG_SUP) return 0;
+        return 1.0;
+    }
+    if(mode_wind == 4) /* JET: yuan18.cpp AGNJetFlag default bipolar caps within 10 degrees */
+    {
+        if(mu < YUAN18_COS_ANG_JET) return 0;
+        return 1.0;
+    }
+    return 0;
+}
+
+double yuan18_wind_surface_assignment_weight(int j, double r_to_sample)
+{
+    if((P[j].Mass <= 0) || (SphP[j].Density <= 0) || (PPP[j].Hsml <= 0)) return 0;
+    if((r_to_sample < 0) || (r_to_sample >= PPP[j].Hsml)) return 0;
+
+    double hinv = 1.0 / PPP[j].Hsml;
+    double hinv3 = hinv * hinv * hinv;
+    double hinv4 = hinv3 * hinv;
+    double wk = 0, dwk = 0;
+    kernel_main(r_to_sample * hinv, hinv3, hinv4, &wk, &dwk, -1);
+    if((wk <= 0) || isnan(wk)) return 0;
+
+    /* This is dimensionless.  In physical variables V_phys=a^3 V_code and
+       W_phys=a^-3 W_code, so the scale factors cancel exactly. */
+    return (P[j].Mass / SphP[j].Density) * wk;
+}
+
+double yuan18_wind_shellweight_localcoupling(int j, double cos_theta, double r, double r_inject, int mode_wind)
+{
+    if(r <= 0 || r_inject <= 0 || mode_wind <= 0) return 0;
+    double H_j = PPP[j].Hsml;
+    if((H_j <= 0) || (P[j].Mass <= 0) || (SphP[j].Density <= 0)) return 0;
+    double dr_shell = fabs(r - r_inject);
+    if(fabs(r - r_inject) >= H_j) return 0;
+
+    double shell_face_area = M_PI * (H_j * H_j - dr_shell * dr_shell);
+    if((shell_face_area <= 0) || isnan(shell_face_area)) return 0;
+    double wk = 0.5 * (1. - 1. / sqrt(1. + shell_face_area / (M_PI * r_inject * r_inject)));
+    if((wk <= 0) || isnan(wk)) return 0;
+
+    double mu = fabs(cos_theta);
+    if(mode_wind == 1) /* HOT: biconical shell at 30-70 degrees from the wind axis */
+    {
+        if(mu < YUAN18_COS_ANG2_HOT || mu > YUAN18_COS_ANG1_HOT) return 0;
+        return wk;
+    }
+    if(mode_wind == 2) /* SUB: all-sky cos^2(theta) weighting */
+    {
+        return wk * mu * mu;
+    }
+    if(mode_wind == 3) /* SUP: polar caps within 30 degrees */
+    {
+        if(mu < YUAN18_COS_ANG_SUP) return 0;
+        return wk;
+    }
+    return 0;
+}
+#endif
+
+
 
 /* function below is used for long-range black hole radiation fields -- used only in the forcetree routines (where they
     rely this for things like the long-range radiation pressure and compton heating) */
@@ -206,7 +334,156 @@ double bh_angleweight(double bh_lum_input, MyFloat bh_angle[3], double dx, doubl
 }
 
 
+// Note: Yuan18 loop functions (blackhole_bondi_radius_loop, blackhole_mass_flux_loop) are declared in blackhole.h.
+// Most helper functions below are file-local; yuan18_bh_luminosity is also used to reconstruct snapshot state.
+#if defined(BH_YUAN18_ACCRETION)
+    static double mdotwind_cold(double mdot_bh)
+    {
+        double l_bh_cold = 0.1 * mdot_bh * C_LIGHT_CODE * C_LIGHT_CODE;
+        double mdot_wind = 0.28 * pow(l_bh_cold / 1e45 * (UNIT_ENERGY_IN_CGS / UNIT_TIME_IN_CGS), 0.85) / (UNIT_MASS_IN_SOLAR / UNIT_TIME_IN_YR);
+        return mdot_wind;
+    }
 
+    static int Newtonian_Solver(double mdot_bh_init, double eps, double mdot_in, double *root)
+    {
+        double mdot_bh_old, mdot_bh_new;
+        int i_iter;
+        mdot_bh_old = mdot_bh_init;
+        
+        for (i_iter = 0; i_iter < 100000; i_iter++)
+        {
+            double f0 = mdotwind_cold(mdot_bh_old) - (mdot_in - mdot_bh_old);
+            double f_plus = mdotwind_cold(mdot_bh_old + eps * mdot_bh_old) - (mdot_in - (mdot_bh_old + eps * mdot_bh_old));
+            double f_minus = mdotwind_cold(mdot_bh_old - eps * mdot_bh_old) - (mdot_in - (mdot_bh_old - eps * mdot_bh_old));
+            double derivative = (f_plus - f_minus) / (2.0 * eps * mdot_bh_old);
+            
+            mdot_bh_new = mdot_bh_old - f0 / derivative;
+            
+            if (fabs(mdot_bh_new - mdot_bh_old) / mdot_bh_old < eps)
+            {
+                *root = mdot_bh_new;
+                return 1;
+            }
+            mdot_bh_old = mdot_bh_new;
+        }
+        return 0;
+    }
+
+    static double get_mdot_bh_cold(double mdot_in)
+    {
+        double mdot_bh;
+        if (Newtonian_Solver(0.5 * mdot_in, 1e-7, mdot_in, &mdot_bh) && mdot_bh > MIN_REAL_NUMBER && mdot_bh < mdot_in)
+        {
+            return mdot_bh;
+        }
+        else
+        {
+            printf("mdot_bh = %e, mdot_in = %e\n", mdot_bh, mdot_in);
+            printf("### FATAL ERROR in function [yuan18: get_mdot_bh_cold]\n");
+            printf("Mdot_BH could not be calculated\n");
+            return mdot_in;  
+        }
+    }
+
+#ifdef BH_YUAN18_JET_SPAWN
+    static const double yuan18_jet_mass_loading = 0.35;
+
+    /* Extend the existing hot bridge only along its first increasing branch.
+       At its old upper endpoint x2, log10(mdot_0/mdot_edd) = log10(0.02)
+       and the slope is 0.85. For s = log10(mdot_in/mdot_crit), solve
+       a*s^3 + quadratic*s^2 + 0.85*s = log10(1 + jet_mass_loading).
+       Return -1 if the polynomial turns over before reaching that threshold;
+       such a bridge needs a revised physical prescription, not extrapolation. */
+    static double yuan18_hot_jet_log_extension(double a, double quadratic)
+    {
+        const double target = log10(1.0 + yuan18_jet_mass_loading);
+        double turn = INFINITY;
+        double aa = 3*a, bb = 2*quadratic;
+        if(!isfinite(aa) || !isfinite(bb)) {return -1;}
+        if(aa == 0)
+        {
+            if(bb < 0) {turn = -0.85/bb;}
+        }
+        else
+        {
+            double discriminant = bb*bb - 4*aa*0.85;
+            if(discriminant > 0)
+            {
+                /* Stable quadratic roots of the derivative; its first positive
+                   root is the end of the initially increasing branch. */
+                double q = -0.5*(bb + copysign(sqrt(discriminant), bb));
+                double roots[2] = {q/aa, 0.85/q};
+                for(int j=0;j<2;j++)
+                    {if(roots[j] > 0 && roots[j] < turn) {turn = roots[j];}}
+            }
+        }
+        double lower = 0, upper = DMIN(0.25, turn);
+        int bracketed = 0;
+        for(int j=0;j<128;j++)
+        {
+            double value = ((a*upper + quadratic)*upper + 0.85)*upper;
+            if(!isfinite(value)) {return -1;}
+            if(value >= target) {bracketed = 1; break;}
+            if(upper >= turn) {return -1;}
+            upper = DMIN(2*upper, turn);
+        }
+        if(!bracketed) {return -1;}
+        for(int j=0;j<64;j++)
+        {
+            double mid = 0.5*(lower + upper);
+            double value = ((a*mid + quadratic)*mid + 0.85)*mid;
+            if(value < target) {lower = mid;} else {upper = mid;}
+        }
+        return upper;
+    }
+#endif
+
+    /* Rescaling factor for radiative efficiency; yuan18.cpp reads this from the parameter file.
+     * Here hard-coded to 0.1 so that the thin-disk plateau becomes eta = 0.1 (standard choice).
+     * TODO: promote to a runtime parameter in All. */
+    static const double eff_em_factor = 0.1;
+
+    /* Piecewise radiative efficiency from Xie & Yuan 2012, as tabulated in Yuan et al. 2018 eq.25.
+     * Argument: mdot_norm = mdot_bh / mdot_edd (dimensionless).
+     * Return value: epsilon = L / (mdot_bh * c^2). */
+    static double GetRadEfficiency(double mdot_norm)
+    {
+        double epsilon;
+        if      (mdot_norm < 9.4e-5)
+            epsilon = 0.12  * pow(100.0 * mdot_norm,  0.59);
+        else if (mdot_norm < 5.0e-3)
+            epsilon = 0.026 * pow(100.0 * mdot_norm,  0.27);
+        else if (mdot_norm < 6.19e-3)
+            epsilon = 0.5   * pow(100.0 * mdot_norm,  4.53); /* bridge: avoids discontinuity */
+        else if (mdot_norm < 1.0)
+            epsilon = 0.057;                                   /* thin-disk plateau */
+        else
+            epsilon = 0.1197 * pow(100.0 * mdot_norm, -0.17); /* super-Edd, Jiang+2019 */
+        return eff_em_factor / 0.057 * epsilon;
+    }
+
+    double yuan18_bh_luminosity(double mdot_bh, double bh_mass)
+    {
+        if(mdot_bh <= 0 || bh_mass <= 0) {return 0;}
+        double mdot_edd = bh_eddington_mdot(bh_mass);
+        if(mdot_edd <= 0) {return 0;}
+        double luminosity = GetRadEfficiency(mdot_bh / mdot_edd) * mdot_bh * C_LIGHT_CODE * C_LIGHT_CODE;
+        if(!isfinite(luminosity) || luminosity < 0) {return 0;}
+        return luminosity;
+    }
+
+    static double expFactor(double dt, double tau) // A function to calculate (1 - exp(-dt / tau)) / dt
+        {
+        if (dt < 0.01 * tau)
+        {
+            return (1 - 0.5 * dt / tau) / tau;
+        }
+        else
+        {
+            return (1 - exp(-dt / tau)) / dt;
+        }
+        }
+#endif
 
 
 
@@ -224,7 +501,7 @@ void set_blackhole_mdot(int i, int n, double dt)
     gsl_rng *random_generator_forbh;
 #endif
 #ifdef BH_ENFORCE_EDDINGTON_LIMIT
-    double meddington = bh_eddington_mdot(BPP(n).BH_Mass);
+    double mdot_edd = bh_eddington_mdot(BPP(n).BH_Mass);
 #endif
 
 
@@ -356,6 +633,7 @@ void set_blackhole_mdot(int i, int n, double dt)
 #endif
         mdot = 4. * M_PI * AccretionFactor * All.G * All.G * BPP(n).BH_Mass * BPP(n).BH_Mass * rho / fac;
     }
+
 #endif // ifdef BH_BONDI
 
 
@@ -467,7 +745,7 @@ void set_blackhole_mdot(int i, int n, double dt)
 
 
 #ifdef BH_ENFORCE_EDDINGTON_LIMIT /* cap the maximum at the Eddington limit */
-    if(mdot > All.BlackHoleEddingtonFactor * meddington) {mdot = All.BlackHoleEddingtonFactor * meddington;}
+    if(mdot > All.BlackHoleEddingtonFactor * mdot_edd) {mdot = All.BlackHoleEddingtonFactor * mdot_edd;}
 #endif
 
 #if defined(BH_RETURN_ANGMOM_TO_GAS) /* pre-calculate some quantities for 'angular momentum feedback' here, these have to be based on the mdot estimator above */
@@ -480,9 +758,228 @@ void set_blackhole_mdot(int i, int n, double dt)
     if(jmag>0 && lmag>0) {BlackholeTempInfo[i].angmom_norm_topass_in_swallowloop = angmom_toreturn / sqrt(jmag);} /* this should be in units such that, times CODE radius and (code=physical) ang-mom, gives CODE velocity: looks ok at present */
 #endif
 
+
+
+
+#ifdef BH_YUAN18_ACCRETION
+    /* Finalize the weighted Bondi radius computed in blackhole_bondi_radius_loop. */
+    if (BlackholeTempInfo[i].Bondi_WeightSum > 0) {
+        BlackholeTempInfo[i].Bondi_Radius_Weighted = BlackholeTempInfo[i].BondiRadius_WeightedSum / BlackholeTempInfo[i].Bondi_WeightSum;
+        if (BlackholeTempInfo[i].Bondi_Radius_Weighted > 0)
+            BPP(n).Yuan18_BH_Bondi_Radius = BlackholeTempInfo[i].Bondi_Radius_Weighted;
+    } else {
+        /* Match blackhole_mass_flux_loop(): if this step finds no inflowing gas
+         * for a fresh weighted radius, keep using the last valid radius instead
+         * of zeroing the area used below. */
+        BlackholeTempInfo[i].Bondi_Radius_Weighted = BPP(n).Yuan18_BH_Bondi_Radius;
+    }
+
+    double x1min = BlackholeTempInfo[i].Bondi_Radius_Weighted;
+
+    double mdot_edd_yuan18 = bh_eddington_mdot(BPP(n).BH_Mass);
+    double mdot_crit = mdotwind_cold(0.02 * mdot_edd_yuan18) + 0.02 * mdot_edd_yuan18;
+
+    /* Yuan18 mass inflow: kernel-interpolated flux through the weighted Bondi sphere. */
+    double mdot_bondi = DMAX((double)BlackholeTempInfo[i].Yuan18_Mdot_Flux, 0.0);
+    /* Persist the measured inflow rate so set_blackhole_new_mass can use it to feed Yuan18_BH_Mass_fall. */
+    BPP(n).Yuan18_BH_Mdot_Bondi = mdot_bondi;
+    double mdot_bh = 0, mdot_wind = 0, v_wind = 0, eps_wind = 0;
+    double mdot_jet = 0, v_jet = 0, eps_jet = 0;
+    int mode_wind = 0; /* NONE; all branches assign this explicitly */
+    double r_inject = 0; /* injection/coupling surface radius (physical). Current particle coupling uses R_bondi for HOT/SUB/SUP modes. */
+
+    /* With jets, test the hot candidate before selecting the cold branch.
+       Without jets, preserve the original two-component mode boundary. */
+#ifdef BH_YUAN18_JET_SPAWN
+    if (mdot_bondi > MIN_REAL_NUMBER)
+#else
+    if (mdot_bondi > MIN_REAL_NUMBER && mdot_bondi <= mdot_crit)
+#endif
+    {
+#ifdef BH_YUAN18_JET_SPAWN
+        int hot_candidate_valid = 1;
+#endif
+        /* Mass, G, c, and specific internal energy retain physical code units
+           in a comoving integration, so r_s and every radius below are physical. */
+        double r_s = 2 * All.G * BPP(n).BH_Mass / (C_LIGHT_CODE * C_LIGHT_CODE);
+        double r_tr_physical = 3 * r_s * (0.02 * mdot_edd_yuan18 / mdot_bondi) * (0.02 * mdot_edd_yuan18 / mdot_bondi);
+                
+        r_tr_physical = DMAX(r_tr_physical, 3 * r_s); /* raw Yuan18 truncation radius before the particle-code boundary clamp */
+        double r_tr_mdot = DMIN(r_tr_physical, x1min); /* effective radius for extrapolating mdot_bh from the measured inflow at R_bondi */
+        r_tr_mdot = DMAX(r_tr_mdot, 3 * r_s);
+        double r_tr_feedback = DMAX(DMIN(r_tr_physical, x1min), 3 * r_s); /* yuan18.cpp-style radius for hot wind speed/thermal energy */
+
+        r_inject = x1min; /* current particle coupling places hot-mode wind on the weighted Bondi surface */
+
+        double mdot_r_tr_is_r_in = 0.02 * sqrt(3. * r_s / x1min) * mdot_edd_yuan18;
+
+        if (mdot_bondi > mdot_r_tr_is_r_in) // hot mode with r_tr_mdot < R_bondi (small r_tr, high mdot)
+        {
+            double x2 = log10(mdot_crit / mdot_edd_yuan18);
+            double x1 = log10(mdot_r_tr_is_r_in / mdot_edd_yuan18); /* lower boundary of fitting range, not current mdot_bondi */
+            double a = (2.85 - 2 * log10(x1min / 3 / r_s) / (x2 - x1)) / ((x2 - x1) * (x2 - x1));
+            double b = (-1.15 - 3 * (x2 * x2 - x1 * x1) * a) / (x2 - x1) / 2; 
+            double c = 0.85 - 3 * x2 * x2 * a - 2 * x2 * b;
+            double d = log10(0.02) - (a * x2 * x2 * x2 + b * x2 * x2 + c * x2); 
+            double log_mdot_bondi_edd = log10(mdot_bondi / mdot_edd_yuan18);
+#ifdef BH_YUAN18_JET_SPAWN
+            if(log_mdot_bondi_edd > x2)
+            {
+                /* Continue only to the first upward threshold crossing.
+                   Farther polynomial extrapolation can turn down and produce
+                   spurious hot solutions at arbitrarily large inflow. */
+                double log_extension = yuan18_hot_jet_log_extension(a, 3*a*x2 + b);
+                if(log_extension < 0)
+                {
+                    printf("Yuan18 hot-jet bridge has no monotone threshold crossing: Task=%d Time=%g BH=%llu R_bondi=%g mdot_crit=%g\n",
+                           ThisTask, All.Time, (unsigned long long)P[n].ID, x1min, mdot_crit);
+                    fflush(stdout);
+                    endrun(8897);
+                }
+                if(log_mdot_bondi_edd > x2 + log_extension) {hot_candidate_valid = 0;}
+            }
+            if(hot_candidate_valid)
+#endif
+            {
+                mdot_bh = pow(10, a * log_mdot_bondi_edd * log_mdot_bondi_edd * log_mdot_bondi_edd + b * log_mdot_bondi_edd * log_mdot_bondi_edd + c * log_mdot_bondi_edd + d) * mdot_edd_yuan18;
+            }
+            mdot_wind = DMAX(mdot_bondi - mdot_bh, 0.0);
+        }
+        else // hot mode with r_tr_physical >= R_bondi (large r_tr, low mdot); mdot is matched at R_bondi
+        {
+            mdot_bh = mdot_bondi * sqrt(3. * r_s / r_tr_mdot);
+            mdot_wind = mdot_bondi - mdot_bh;
+        }
+
+        double gamma_gas = 5.0 / 3.0;
+        double gamma_wind = 4.0 / 3.0; /* ADAF wind adiabatic index (radiation/relativistic), distinct from gamma_gas; yuan18.cpp static Real gamma_wind = 4.0/3 */
+        v_wind = 0.2 * sqrt(All.G * BPP(n).BH_Mass / r_tr_feedback);
+        /* adiabatic-decompression factor from the feedback radius to the injection surface */
+        eps_wind = 0.5 / ((gamma_gas - 1.0) * gamma_gas) * All.G * BPP(n).BH_Mass / (3. * r_tr_feedback) * pow(r_inject / r_tr_feedback, -2.0 * (gamma_wind - 1.0));
+
+#ifdef BH_YUAN18_JET_SPAWN
+        /* The hot solution supplies BH + jet after wind loss. The jet mass
+           loading is relative to the final horizon accretion rate. */
+        if(!isfinite(mdot_bh) || mdot_bh < 0 || mdot_bh > mdot_bondi) {hot_candidate_valid = 0;}
+        mdot_bh /= 1.0 + yuan18_jet_mass_loading;
+        mdot_jet = yuan18_jet_mass_loading * mdot_bh;
+        if(hot_candidate_valid && mdot_bh <= 0.02 * mdot_edd_yuan18)
+        {
+            mode_wind = 1; /* HOT: accept only after subtracting jet supply. */
+            v_jet = 0.3 * C_LIGHT_CODE;
+        }
+        else
+        {
+            /* Reject all hot outputs; the cold branch below recomputes them. */
+            mdot_bh = mdot_wind = mdot_jet = v_wind = eps_wind = 0;
+        }
+#else
+        mode_wind = 1; /* HOT without jets: full post-wind supply reaches the BH. */
+#endif
+    }
+
+#ifdef BH_YUAN18_JET_SPAWN
+    if (mdot_bondi > MIN_REAL_NUMBER && mode_wind != 1) /* rejected hot candidate */
+#else
+    if (mdot_bondi > mdot_crit) /* original cold-mode boundary without jets */
+#endif
+    {
+        if (mdot_bondi > 1.66 * mdot_edd_yuan18) // super Eddington
+        {
+            mdot_bh = 0.5874 * pow(mdot_bondi / mdot_edd_yuan18, 1.0593) * mdot_edd_yuan18;
+            mdot_wind = mdot_bondi - mdot_bh;
+            v_wind = 0.333153 * pow(mdot_bh / mdot_edd_yuan18, -0.0848) * C_LIGHT_CODE;
+            mode_wind = 3; // SUP (matching yuan18.cpp OutflowMode enum)
+        }
+        else
+        {
+            double mdot_inn = mdot_bondi;
+            mdot_bh = get_mdot_bh_cold(mdot_inn);
+            mdot_wind = mdot_inn - mdot_bh;
+            double l_bh_cold = 0.1 * mdot_bh * C_LIGHT_CODE * C_LIGHT_CODE;
+#ifdef BH_YUAN18_FIORE_COLD_WIND
+            /* Provisional Fiore et al. 2017, A&A 601, A143 UFO prescription:
+               keep v0 ~ 3.16e4 km/s at L_bol = 1e45 erg/s from the Fig. 2
+               slope-5 reference line, but use 1/3.9 from the Table 1 central
+               slope L_bol proportional to v_max^(3.9 +/- 1.4).
+               TODO (uncertain calibration): this intentionally combines a
+               graph-derived normalization with a different fitted slope.
+               It is NOT the published best-fit relation: Table 1 gives no
+               intercept, so the matched normalization remains to be checked.
+               Extrapolate throughout SUB mode, retaining the Yuan18 mass
+               flux and 0.3c cap as model assumptions. */
+            v_wind = 3.162277660168379e4 * pow(l_bh_cold / 1e45 * UNIT_ENERGY_IN_CGS / UNIT_TIME_IN_CGS, 1.0 / 3.9) / UNIT_VEL_IN_KMS;
+#else
+            v_wind = 2.5e4 * pow(l_bh_cold / 1e45 * UNIT_ENERGY_IN_CGS / UNIT_TIME_IN_CGS, 0.4) / UNIT_VEL_IN_KMS;
+#endif
+            v_wind = DMIN(v_wind, 0.3 * C_LIGHT_CODE);
+            mode_wind = 2; // SUB (matching yuan18.cpp OutflowMode enum)
+        }
+
+        double gamma = 5.0 / 3.0;
+        eps_wind = (130 / UNIT_VEL_IN_KMS) * (130 / UNIT_VEL_IN_KMS) / ((gamma - 1.0) * gamma);
+        r_inject = x1min; /* cold/super modes: injection surface is the weighted Bondi radius */
+    }
+
+    mdot = mdot_bh; /* the accretion rate onto the BH is the mdot_bh we just solved for */
+    BlackholeTempInfo[i].Yuan18_v_wind     = v_wind;
+    BlackholeTempInfo[i].Yuan18_eps_wind   = eps_wind;
+    BlackholeTempInfo[i].Yuan18_mdot_wind  = DMAX(mdot_wind, 0.0);
+    BlackholeTempInfo[i].Yuan18_mode_wind  = mode_wind;
+    BlackholeTempInfo[i].Yuan18_r_inject   = r_inject;
+    BPP(n).Yuan18_BH_mode_wind = mode_wind;
+#if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS)
+    /* normalized Yuan18 wind axis: fixed z-axis for debug, otherwise use the persistent
+       BH/accretion-disk angular-momentum proxy only. Do not fall back to the surrounding
+       gas angular momentum: the wind symmetry axis is a BH/disk property here. */
+#ifdef BH_YUAN18_WIND_FIXED_Z_AXIS
+    BlackholeTempInfo[i].Yuan18_J_dir[0] = 0.0;
+    BlackholeTempInfo[i].Yuan18_J_dir[1] = 0.0;
+    BlackholeTempInfo[i].Yuan18_J_dir[2] = 1.0;
+#else
+    double J_axis[3] = {0.0, 0.0, 0.0}, Jmag2 = 0.0;
+#ifdef BH_FOLLOW_ACCRETED_ANGMOM
+    for(int kk=0; kk<3; kk++) {J_axis[kk] = BPP(n).BH_Specific_AngMom[kk];}
+#endif
+    for(int kk=0; kk<3; kk++) {Jmag2 += J_axis[kk] * J_axis[kk];}
+    if(Jmag2 > 0)
+    {
+        double inv_Jmag = 1.0 / sqrt(Jmag2);
+        for(int kk=0; kk<3; kk++) {BlackholeTempInfo[i].Yuan18_J_dir[kk] = J_axis[kk] * inv_Jmag;}
+    }
+    else
+    {
+        for(int kk=0; kk<3; kk++) {BlackholeTempInfo[i].Yuan18_J_dir[kk] = 0.0;}
+    }
+#endif
+#if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
+    BPP(n).Yuan18_BH_r_inject  = r_inject;
+    for(int kk=0; kk<3; kk++) {BPP(n).Yuan18_BH_J_dir[kk] = BlackholeTempInfo[i].Yuan18_J_dir[kk];}
+#endif
+#ifdef BH_YUAN18_WIND_SPAWN
+    BPP(n).Yuan18_BH_v_wind    = v_wind;
+    BPP(n).Yuan18_BH_eps_wind  = eps_wind;
+#endif
+#endif
+#ifdef BH_YUAN18_JET_SPAWN
+    BlackholeTempInfo[i].Yuan18_mdot_jet = DMAX(mdot_jet, 0.0);
+    BlackholeTempInfo[i].Yuan18_v_jet = v_jet;
+    BlackholeTempInfo[i].Yuan18_eps_jet = eps_jet;
+    BPP(n).Yuan18_BH_mdot_jet = BlackholeTempInfo[i].Yuan18_mdot_jet;
+    BPP(n).Yuan18_BH_v_jet = v_jet;
+    BPP(n).Yuan18_BH_eps_jet = eps_jet;
+#endif
+    BlackholeTempInfo[i].Yuan18_L_rad = yuan18_bh_luminosity(mdot_bh, BPP(n).BH_Mass);
+#ifdef BH_YUAN18_RADIATION
+    BPP(n).Yuan18_BH_L_rad = BlackholeTempInfo[i].Yuan18_L_rad;
+#endif
+
+#endif
+
     /* alright, now we can FINALLY set the BH accretion rate */
     if(isnan(mdot)) {mdot=0;}
     BPP(n).BH_Mdot = DMAX(mdot,0);
+
 }
 
 
@@ -501,15 +998,62 @@ void set_blackhole_new_mass(int i, int n, double dt)
     for(k=0;k<3;k++) {BPP(n).BH_Specific_AngMom[k] = (m_tot_for_j*BPP(n).BH_Specific_AngMom[k] + dm_acc_for_j*BlackholeTempInfo[i].Jgas_in_Kernel[k]/(MIN_REAL_NUMBER + BlackholeTempInfo[i].Mgas_in_Kernel)) / (m_tot_for_j + dm_acc_for_j);}
 #endif
 
-/*  for BH_WIND_CONTINUOUS or BH_WIND_SPAWN
+/*  for the native BH_WIND_CONTINUOUS or BH_WIND_SPAWN models
         - we accrete the winds first, either explicitly to the BH or implicitly into the disk -
         - then we remove the wind mass in the final loop
+    for Yuan18 wind models
+        - the physical BH receives mdot_bondi*dt and loses wind mass, plus jet mass when partitioned -
+        - the stochastic swallow deficit follows mdot_bondi, while the selected wind path returns mdot_wind -
     for BH_WIND_KICK
         - the BH grows according to the mdot set above (including the mass loss in winds)
         - if there is an alpha-disk, the mass going out in winds has been subtracted from mdot_alphadisk
     for BH_WIND_KICK + BH_GRAVCAPTURE_GAS
         - the ratio of BH/disk growth-to-outflow rate is enforced explicitly in blackhole_swallow_and_kick */
 
+#ifdef BH_YUAN18_ACCRETION
+    /* Yuan18 measures the full inflow through the Bondi surface, then partitions
+       that inflow into BH growth and outflow loss (including jet loss with
+       BH_YUAN18_JET_SPAWN). Net physical growth is mdot_bh*dt. */
+    double dm_yuan18_bondi = BPP(n).Yuan18_BH_Mdot_Bondi * dt;
+    double dm_yuan18_wind = BlackholeTempInfo[i].Yuan18_mdot_wind * dt;
+    double dm_yuan18_bh = BPP(n).BH_Mdot * dt;
+#ifdef BH_YUAN18_JET_SPAWN
+    double dm_yuan18_jet = BlackholeTempInfo[i].Yuan18_mdot_jet * dt;
+    double dm_yuan18_scale = DMAX(fabs(dm_yuan18_bondi), fabs(dm_yuan18_bh) + fabs(dm_yuan18_wind) + fabs(dm_yuan18_jet));
+    double dm_yuan18_tolerance = 1.e-5 * DMAX(dm_yuan18_scale, MIN_REAL_NUMBER);
+    if(!isfinite(dm_yuan18_bondi) || !isfinite(dm_yuan18_wind) || !isfinite(dm_yuan18_bh) ||
+       !isfinite(dm_yuan18_jet) || dm_yuan18_bondi < 0 || dm_yuan18_wind < 0 ||
+       dm_yuan18_bh < 0 || dm_yuan18_jet < 0 ||
+       fabs(dm_yuan18_bondi - dm_yuan18_bh - dm_yuan18_wind - dm_yuan18_jet) > dm_yuan18_tolerance)
+    {
+        printf("Yuan18 mass partition failure: Task=%d Time=%g BH=%llu dm_bondi=%g dm_bh=%g dm_wind=%g dm_jet=%g tolerance=%g mode=%d\n",
+               ThisTask, All.Time, (unsigned long long)P[n].ID, dm_yuan18_bondi, dm_yuan18_bh,
+               dm_yuan18_wind, dm_yuan18_jet, dm_yuan18_tolerance, BlackholeTempInfo[i].Yuan18_mode_wind);
+        fflush(stdout);
+        endrun(8897);
+    }
+#else
+    double dm_yuan18_scale = DMAX(fabs(dm_yuan18_bondi), fabs(dm_yuan18_bh) + fabs(dm_yuan18_wind));
+    double dm_yuan18_tolerance = 1.e-5 * DMAX(dm_yuan18_scale, MIN_REAL_NUMBER);
+    if(!isfinite(dm_yuan18_bondi) || !isfinite(dm_yuan18_wind) || !isfinite(dm_yuan18_bh) ||
+       dm_yuan18_bondi < 0 || dm_yuan18_wind < 0 || dm_yuan18_bh < 0 ||
+       fabs(dm_yuan18_bondi - dm_yuan18_bh - dm_yuan18_wind) > dm_yuan18_tolerance)
+    {
+        printf("Yuan18 mass partition failure: Task=%d Time=%g BH=%llu dm_bondi=%g dm_bh=%g dm_wind=%g tolerance=%g mode=%d\n",
+               ThisTask, All.Time, (unsigned long long)P[n].ID, dm_yuan18_bondi, dm_yuan18_bh,
+               dm_yuan18_wind, dm_yuan18_tolerance, BlackholeTempInfo[i].Yuan18_mode_wind);
+        fflush(stdout);
+        endrun(8897);
+    }
+#endif
+    BPP(n).BH_Mass += dm_yuan18_bondi;
+    BPP(n).BH_Mass -= dm_yuan18_wind;
+#ifdef BH_YUAN18_JET_SPAWN
+    /* Debit physical BH mass at supply time; spawning later debits only
+       dynamical particle mass and the pending jet reservoir. */
+    BPP(n).BH_Mass -= dm_yuan18_jet;
+#endif
+#else
     double dMBH_continuous_accretion; dMBH_continuous_accretion = BPP(n).BH_Mdot * dt;
 #ifdef BH_ALPHADISK_ACCRETION
     BPP(n).BH_Mass += dMBH_continuous_accretion;   // mdot comes from the disk - no mass loss here regardless of BAL model -
@@ -519,15 +1063,43 @@ void set_blackhole_new_mass(int i, int n, double dt)
     if(P[n].Mass<0) {P[n].Mass=0;}
     dMBH_continuous_accretion += dm_alphadisk;
 #else // #ifdef BH_ALPHADISK_ACCRETION
-#if defined(BH_WIND_CONTINUOUS) || defined(BH_WIND_SPAWN)
+#if (defined(BH_WIND_CONTINUOUS) && !defined(BH_YUAN18_WIND_CONTINUOUS)) || defined(BH_WIND_SPAWN)
     BPP(n).BH_Mass += dMBH_continuous_accretion / All.BAL_f_accretion; // accrete the winds first, then remove the wind mass in the final loop
 #else
     BPP(n).BH_Mass += dMBH_continuous_accretion;
 #endif
 #endif // #else BH_ALPHADISK_ACCRETION
+#endif // BH_YUAN18_ACCRETION
 #if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
+#if defined(BH_YUAN18_ACCRETION) && (defined(BH_YUAN18_WIND_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS))
+    BPP(n).BH_AccretionDeficit += dm_yuan18_bondi; /* swallow the full inflow; the wind path returns dm_wind to resolved gas */
+#elif defined(BH_YUAN18_JET_SPAWN)
+    /* With no resolved wind, swallow just BH growth plus the resolved jet supply. */
+    BPP(n).BH_AccretionDeficit += dm_yuan18_bh + dm_yuan18_jet;
+#elif defined(BH_YUAN18_ACCRETION)
+    BPP(n).BH_AccretionDeficit += dm_yuan18_bh; /* no resolved wind path: only remove the mass retained by the BH */
+#else
     BPP(n).BH_AccretionDeficit += dMBH_continuous_accretion; // this is mass continuously accreted, which needs to be stochastically 'caught up to'
 #endif
+#endif
+
+#ifdef BH_YUAN18_ACCRETION
+    /* Bondi_Radius_Weighted is physical, hence tau_ff is a physical code time
+       and can be combined directly with the physical feedback timestep dt. */
+    double tau_ff = 0.5 * M_PI * sqrt(pow(BlackholeTempInfo[i].Bondi_Radius_Weighted, 3.0) / (2. * All.G * BPP(n).BH_Mass)); // in yuan18.cpp, tau_ff should be determined by both tau_ff_bh and tau_ff_gal, whenStellarFeedbackFlag is defined. For simplicity, stellar feedback is not included yet.
+    /* Step 1: deplete disk by full Bondi inflow (BH + wind, plus jet when partitioned). */
+    BPP(n).Yuan18_BH_Mass_disk -= dt * BPP(n).Yuan18_BH_Mdot_Bondi;
+    if(BPP(n).Yuan18_BH_Mass_disk < 0) {BPP(n).Yuan18_BH_Mass_disk = 0;}
+    /* Step 2: transfer from free-fall reservoir into disk. */
+    double mdot_disk = BPP(n).Yuan18_BH_Mass_fall * expFactor(dt, tau_ff);
+    BPP(n).Yuan18_BH_Mass_disk += dt * mdot_disk;
+    BPP(n).Yuan18_BH_Mass_fall -= dt * mdot_disk;
+    // Real dt_bh_disk = mdot_disk > TINY_NUMBER ? 0.1 * std::min(mdisk / mdot_disk, tau_disk) : 0.1 * tau_disk;
+    /* Step 3: Bondi inflow feeds the free-fall reservoir. */
+    BPP(n).Yuan18_BH_Mass_fall += dt * BPP(n).Yuan18_BH_Mdot_Bondi;
+#endif
+
+
 #ifdef JET_DIRECTION_FROM_KERNEL_AND_SINK
     double mtot = BlackholeTempInfo[i].Mgas_in_Kernel + BPP(n).Mass;
     for(k=0; k<3; k++) { BlackholeTempInfo[i].BH_SurroundingGasCOM[k] /= mtot;} // this now stores the COM of the sink-gas system, relative to the sink position
@@ -551,8 +1123,8 @@ void set_blackhole_drag(int i, int n, double dt)
     {
         double fac = BPP(n).BH_Mdot * dt / BPP(n).BH_Mass;
 #if (BH_DRAG == 2)
-        double meddington = bh_eddington_mdot(BPP(n).BH_Mass);
-        fac = meddington * dt / BPP(n).BH_Mass; /* make the force stronger to keep the BH from wandering */
+        double mdot_edd = bh_eddington_mdot(BPP(n).BH_Mass);
+        fac = mdot_edd * dt / BPP(n).BH_Mass; /* make the force stronger to keep the BH from wandering */
 #endif
         if(fac>1) fac=1;
         for(k = 0; k < 3; k++) {P[n].GravAccel[k] += All.cf_atime*All.cf_atime * fac * BlackholeTempInfo[i].BH_SurroundingGasVel[k] / dt;} // currently incompatible with hermite integrator -- need to update to Other_Accel
@@ -707,6 +1279,10 @@ void blackhole_final_operations(void)
     for(i=0; i<N_active_loc_BHs; i++)
     {
         n = BlackholeTempInfo[i].index;
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+        double yuan18_wind_launch_velocity_code[3];
+        for(k=0;k<3;k++) {yuan18_wind_launch_velocity_code[k] = P[n].Vel[k];}
+#endif
         int update_bh_moments = 0; // flag whether to go into the block below updating conserved quantities like mass, momentum, etc
         if(P[n].Mass > 0)
         {
@@ -758,6 +1334,12 @@ void blackhole_final_operations(void)
 	    BPP(n).BH_accreted_photon_energy += BlackholeTempInfo[i].accreted_photon_energy;
 #endif
         } // if(masses > 0) check
+#ifdef BH_YUAN18_JET_SPAWN
+        if(P[n].Mass > 0 && BlackholeTempInfo[i].accreted_Yuan18_jet_reservoir_mass > 0)
+        {
+            BPP(n).Yuan18_BH_unspawned_jet_mass += BlackholeTempInfo[i].accreted_Yuan18_jet_reservoir_mass;
+        }
+#endif
 #ifdef HERMITE_INTEGRATION
         else { P[n].AccretedThisTimestep = 0; }
 #endif
@@ -765,24 +1347,91 @@ void blackhole_final_operations(void)
         if(All.ComovingIntegrationOn) {P[n].SinkRadius = DMIN(P[n].SinkRadius, SinkParticle_GravityKernelRadius);} // update sink radius if simulation has it dynamically evolving.
 #endif
 
-        /* Correct for the mass loss due to radiation and BAL winds */
-        /* always substract the radiation energy from BPP(n).BH_Mass && P[n].Mass */
+        /* Correct for mass loss used by the native GIZMO radiation and BAL models. Yuan18 accretion
+         * already defines net BH growth through its explicit inflow/outflow partition above. */
         dt = GET_PARTICLE_FEEDBACK_TIMESTEP_IN_PHYSICAL(n);
 #ifdef BH_INTERACT_ON_GAS_TIMESTEP
 	dt = P[n].dt_since_last_gas_search;
 #endif
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+        /* The gas-side continuous coupling adds a wind parcel moving at
+           v_BH,launch + v_wind*n.  Remove the same mass and lab-frame momentum
+           from the dynamical sink after ordinary swallow/merger moments have
+           been applied.  Exact antipodal sampling makes the intrinsic term
+           zero physically; retaining its roundoff residual here closes total
+           momentum to machine precision. */
+        double dm_wind_expected = BlackholeTempInfo[i].Yuan18_mdot_wind * dt;
+        double dm_wind_coupled = (double)BlackholeTempInfo[i].Yuan18_wind_mass_coupled;
+        double dm_wind_tolerance = 1.e-5 * DMAX(fabs(dm_wind_expected), MIN_REAL_NUMBER);
+        if(!isfinite(dm_wind_expected) || !isfinite(dm_wind_coupled) || dm_wind_expected < 0 ||
+           dm_wind_coupled < 0 || fabs(dm_wind_coupled - dm_wind_expected) > dm_wind_tolerance)
+        {
+            printf("Yuan18 continuous-wind coupled-mass failure: Task=%d Time=%g BH=%llu expected=%g coupled=%g tolerance=%g mode=%d\n",
+                   ThisTask, All.Time, (unsigned long long)P[n].ID, dm_wind_expected,
+                   dm_wind_coupled, dm_wind_tolerance, BlackholeTempInfo[i].Yuan18_mode_wind);
+            fflush(stdout);
+            endrun(8895);
+        }
+
+        double intrinsic_momentum_code[3], intrinsic_momentum_norm2=0;
+        for(k=0;k<3;k++)
+        {
+            intrinsic_momentum_code[k] = (double)BlackholeTempInfo[i].Yuan18_wind_intrinsic_momentum_code[k];
+            intrinsic_momentum_norm2 += intrinsic_momentum_code[k] * intrinsic_momentum_code[k];
+        }
+        double intrinsic_momentum_norm = sqrt(intrinsic_momentum_norm2);
+        double wind_momentum_scale_code =
+            dm_wind_expected * fabs(yuan18_code_velocity_from_physical(BlackholeTempInfo[i].Yuan18_v_wind));
+        double intrinsic_momentum_tolerance = 1.e-5 * DMAX(wind_momentum_scale_code, MIN_REAL_NUMBER);
+        if(!isfinite(intrinsic_momentum_norm) || intrinsic_momentum_norm > intrinsic_momentum_tolerance)
+        {
+            printf("Yuan18 continuous-wind intrinsic-momentum failure: Task=%d Time=%g BH=%llu residual=(%g,%g,%g) norm=%g tolerance=%g mode=%d\n",
+                   ThisTask, All.Time, (unsigned long long)P[n].ID, intrinsic_momentum_code[0],
+                   intrinsic_momentum_code[1], intrinsic_momentum_code[2], intrinsic_momentum_norm,
+                   intrinsic_momentum_tolerance, BlackholeTempInfo[i].Yuan18_mode_wind);
+            fflush(stdout);
+            endrun(8896);
+        }
+
+        if(dm_wind_coupled > 0)
+        {
+            double sink_mass_before_wind = P[n].Mass;
+            double sink_mass_after_wind = sink_mass_before_wind - dm_wind_coupled;
+            if(!isfinite(sink_mass_after_wind) || sink_mass_after_wind <= 0)
+            {
+                printf("Yuan18 continuous-wind sink-mass failure: Task=%d Time=%g BH=%llu sink_mass=%g coupled_wind_mass=%g\n",
+                       ThisTask, All.Time, (unsigned long long)P[n].ID, sink_mass_before_wind,
+                       dm_wind_coupled);
+                fflush(stdout);
+                endrun(8895);
+            }
+            for(k=0;k<3;k++)
+            {
+                double momentum_removed_code =
+                    dm_wind_coupled * yuan18_wind_launch_velocity_code[k] + intrinsic_momentum_code[k];
+                P[n].Vel[k] = (sink_mass_before_wind * P[n].Vel[k] - momentum_removed_code) /
+                              sink_mass_after_wind;
+                P[n].dp[k] -= momentum_removed_code;
+            }
+            P[n].Mass = sink_mass_after_wind;
+        }
+#endif
         double dm = BPP(n).BH_Mdot * dt;
+        (void)dm;
 #ifdef BH_DEBUG_FIX_MDOT_MBH
         dm=0; double period_bh=All.BH_fb_period/UNIT_TIME_IN_GYR, period_bh_on=All.BH_fb_duty_cycle*period_bh;
         if(All.BH_fb_duty_cycle>=1) {dm=BH_DEBUG_FIX_MDOT_MBH*dt;} else {if(fmod(All.Time, period_bh) < period_bh_on) {dm = 2.*(BH_DEBUG_FIX_MDOT_MBH/All.BH_fb_duty_cycle) *  pow(sin(M_PI*All.Time/period_bh_on),2) * dt;}}
 #endif
+#ifndef BH_YUAN18_ACCRETION
         double radiation_loss = evaluate_blackhole_radiative_efficiency(BPP(n).BH_Mdot,BPP(n).BH_Mass,n) * dm;
         if(radiation_loss > DMIN(P[n].Mass,BPP(n).BH_Mass)) radiation_loss = DMIN(P[n].Mass,BPP(n).BH_Mass);
 #ifndef BH_DEBUG_FIX_MDOT_MBH
         P[n].Mass -= radiation_loss; BPP(n).BH_Mass -= radiation_loss;
 #endif
+#endif /* !BH_YUAN18_ACCRETION: Yuan18 mdot_bh already is the prescribed net BH growth rate */
         /* subtract the BAL wind mass from P[n].Mass && (BPP(n).BH_Mass || BPP(n).BH_Mass_AlphaDisk) // DAA: note that the mass loss in winds for BH_WIND_KICK has already been taken into account */
 #ifdef BH_WIND_CONTINUOUS
+#ifndef BH_YUAN18_WIND_CONTINUOUS
         double dm_wind = (1.-All.BAL_f_accretion) / All.BAL_f_accretion * dm;
         if(dm_wind > P[n].Mass) {dm_wind = P[n].Mass;}
 #ifdef BH_ALPHADISK_ACCRETION
@@ -793,6 +1442,7 @@ void blackhole_final_operations(void)
         if(dm_wind > BPP(n).BH_Mass) {dm_wind = BPP(n).BH_Mass;}
 #ifndef BH_DEBUG_FIX_MDOT_MBH
         P[n].Mass -= dm_wind; BPP(n).BH_Mass -= dm_wind;
+#endif
 #endif
 #endif
 #endif // ifdef BH_WIND_CONTINUOUS
@@ -825,6 +1475,34 @@ void blackhole_final_operations(void)
         double n_unspawned = BPP(n).unspawned_wind_mass / ((BH_WIND_SPAWN)*target_mass_for_wind_spawning(n)); // number of spawned gas cells that can be made from the mass in the reservoir
         if(n_unspawned> Max_Unspawned_MassUnits_fromSink) {Max_Unspawned_MassUnits_fromSink = n_unspawned;} // track the maximum integer number of elements this sink could spawn
 #endif
+#ifdef BH_YUAN18_WIND_SPAWN
+        /* The spawn wind path queues mass until it reaches the configured batch size.
+           The current mode, speed, and thermal state follow the latest contribution. */
+        double dm_wind_yuan18 = BlackholeTempInfo[i].Yuan18_mdot_wind * dt;
+        if(dm_wind_yuan18 > 0)
+        {
+            BPP(n).Yuan18_BH_unspawned_wind_mass += dm_wind_yuan18;
+        }
+        double target_wind_mass = target_mass_for_wind_spawning(n);
+        double n_reservoir_yuan18 = (target_wind_mass > 0) ? (BPP(n).Yuan18_BH_unspawned_wind_mass / target_wind_mass) : 0;
+        if(n_reservoir_yuan18 > Max_Yuan18_WindReservoirMassUnits_fromSink) {Max_Yuan18_WindReservoirMassUnits_fromSink = n_reservoir_yuan18;}
+#endif
+
+#ifdef BH_YUAN18_JET_SPAWN
+        /* Jet mass is tagged as HOT material. Cold/NONE intervals neither add to nor
+           clear this reservoir; a later HOT interval resumes accumulation and launch. */
+        double dm_jet_yuan18 = BPP(n).Yuan18_BH_mdot_jet * dt;
+        if(BlackholeTempInfo[i].Yuan18_mode_wind == 1 && dm_jet_yuan18 > 0)
+        {
+            BPP(n).Yuan18_BH_unspawned_jet_mass += dm_jet_yuan18;
+#ifdef BH_OUTPUT_MOREINFO
+            fprintf(FdBhWindDetails, "Yuan18-jet-reservoir-accumulate %.16g %llu %g %g %d\n",
+                    All.Time, (unsigned long long)P[n].ID, dm_jet_yuan18,
+                    BPP(n).Yuan18_BH_unspawned_jet_mass, BPP(n).Yuan18_BH_mode_wind);
+            fflush(FdBhWindDetails);
+#endif
+        }
+#endif
 
 #ifdef RT_BH_ANGLEWEIGHT_PHOTON_INJECTION
         P[n].KernelSum_Around_RT_Source = BlackholeTempInfo[i].BH_angle_weighted_kernel_sum;
@@ -841,16 +1519,78 @@ void blackhole_final_operations(void)
         MstarBulge = BlackholeTempInfo[i].MstarBulge_in_Kernel;
 #endif
 
+
 #if defined(BH_OUTPUT_MOREINFO)
+        /* Columns 0-28: Time ID P_Mass BH_Mass mass_disk BH_Mdot mdot_disk dt Dens u_int Sfr
+         *               Mgas Mstar MgasBulge MstarBulge r0 Pos[3] Vel[3] Jgas[3] Jstar[3] Bondi_R_Weighted
+         * Column 29 (BH_YUAN18_ACCRETION only): Yuan18_BH_Mdot_Bondi
+         * Columns 30-42 (Yuan18 feedback extended output): reservoir_mass reservoir_v_wind
+         *               reservoir_eps_wind reservoir_mode reservoir_J[3] current_v_wind
+         *               current_eps_wind current_r_inject current_mode target_wind_mass n_reservoir_units
+         *               Jet builds use HOT-tagged jet reservoir mass/speed/energy/axis in columns 30-36;
+         *               column 40 remains the current accretion mode, so retained mass is visible in cold/NONE intervals.
+         * Columns 43-49: current mdot_wind v_wind eps_wind mdot_jet v_jet eps_jet L_rad. */
+#ifdef BH_YUAN18_ACCRETION
+#if (defined(BH_YUAN18_WIND_SPAWN) && defined(BH_YUAN18_WIND_DIAGNOSTIC_OUTPUT)) || defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_SPAWN)
+        double yuan18_reservoir_mass = 0, yuan18_reservoir_v_wind = 0, yuan18_reservoir_eps_wind = 0;
+        double yuan18_reservoir_J_dir[3] = {0,0,0}, yuan18_target_wind_mass = 0, yuan18_n_reservoir_units = 0;
+        double yuan18_current_v_outflow = BlackholeTempInfo[i].Yuan18_v_wind;
+        double yuan18_current_eps_outflow = BlackholeTempInfo[i].Yuan18_eps_wind;
+        double yuan18_current_mdot_jet = 0, yuan18_current_v_jet = 0, yuan18_current_eps_jet = 0;
+        int yuan18_reservoir_mode_wind = 0;
+#ifdef BH_YUAN18_WIND_SPAWN
+        yuan18_reservoir_mass = BPP(n).Yuan18_BH_unspawned_wind_mass;
+        yuan18_reservoir_v_wind = BPP(n).Yuan18_BH_v_wind;
+        yuan18_reservoir_eps_wind = BPP(n).Yuan18_BH_eps_wind;
+        yuan18_reservoir_mode_wind = BPP(n).Yuan18_BH_mode_wind;
+        for(int kk=0; kk<3; kk++) {yuan18_reservoir_J_dir[kk] = BPP(n).Yuan18_BH_J_dir[kk];}
+        yuan18_target_wind_mass = target_wind_mass;
+        yuan18_n_reservoir_units = n_reservoir_yuan18;
+#endif
+#ifdef BH_YUAN18_JET_SPAWN
+        yuan18_reservoir_mass = BPP(n).Yuan18_BH_unspawned_jet_mass;
+        yuan18_reservoir_v_wind = BPP(n).Yuan18_BH_v_jet;
+        yuan18_reservoir_eps_wind = BPP(n).Yuan18_BH_eps_jet;
+        yuan18_reservoir_mode_wind = (yuan18_reservoir_mass > 0) ? 4 : 0;
+        for(int kk=0; kk<3; kk++) {yuan18_reservoir_J_dir[kk] = BPP(n).Yuan18_BH_J_dir[kk];}
+        yuan18_target_wind_mass = target_mass_for_wind_spawning(n);
+        yuan18_n_reservoir_units = (yuan18_target_wind_mass > 0) ? yuan18_reservoir_mass / yuan18_target_wind_mass : 0;
+        yuan18_current_v_outflow = BlackholeTempInfo[i].Yuan18_v_jet;
+        yuan18_current_eps_outflow = BlackholeTempInfo[i].Yuan18_eps_jet;
+        yuan18_current_mdot_jet = BlackholeTempInfo[i].Yuan18_mdot_jet;
+        yuan18_current_v_jet = BlackholeTempInfo[i].Yuan18_v_jet;
+        yuan18_current_eps_jet = BlackholeTempInfo[i].Yuan18_eps_jet;
+#endif
+        fprintf(FdBlackHolesDetails, "%.16g %llu  %g %g %g %g %g %g  %g %g %g %g %g %g %g %g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %g %g %g  %g %g %g %g %g  %g %g %g %d  %g %g %g  %g %g %g %d  %g %g  %g %g %g %g %g %g %g\n",
+                All.Time, (unsigned long long)P[n].ID,  P[n].Mass, BPP(n).BH_Mass, mass_disk, BPP(n).BH_Mdot, mdot_disk, dt, BPP(n).DensAroundStar*All.cf_a3inv, BlackholeTempInfo[i].BH_InternalEnergy, BlackholeTempInfo[i].Sfr_in_Kernel,
+                BlackholeTempInfo[i].Mgas_in_Kernel, BlackholeTempInfo[i].Mstar_in_Kernel, MgasBulge, MstarBulge, r0, P[n].Pos[0], P[n].Pos[1], P[n].Pos[2],  P[n].Vel[0], P[n].Vel[1], P[n].Vel[2],
+                BlackholeTempInfo[i].Jgas_in_Kernel[0], BlackholeTempInfo[i].Jgas_in_Kernel[1], BlackholeTempInfo[i].Jgas_in_Kernel[2], BlackholeTempInfo[i].Jstar_in_Kernel[0], BlackholeTempInfo[i].Jstar_in_Kernel[1], BlackholeTempInfo[i].Jstar_in_Kernel[2], BlackholeTempInfo[i].Bondi_Radius_Weighted, BPP(n).Yuan18_BH_Mdot_Bondi,
+                yuan18_reservoir_mass, yuan18_reservoir_v_wind, yuan18_reservoir_eps_wind, yuan18_reservoir_mode_wind,
+                yuan18_reservoir_J_dir[0], yuan18_reservoir_J_dir[1], yuan18_reservoir_J_dir[2], yuan18_current_v_outflow, yuan18_current_eps_outflow, BlackholeTempInfo[i].Yuan18_r_inject, BlackholeTempInfo[i].Yuan18_mode_wind,
+                yuan18_target_wind_mass, yuan18_n_reservoir_units,
+                BlackholeTempInfo[i].Yuan18_mdot_wind, BlackholeTempInfo[i].Yuan18_v_wind,
+                BlackholeTempInfo[i].Yuan18_eps_wind, yuan18_current_mdot_jet,
+                yuan18_current_v_jet, yuan18_current_eps_jet, BlackholeTempInfo[i].Yuan18_L_rad);
+        fflush(FdBlackHolesDetails);
+#else
+        fprintf(FdBlackHolesDetails, "%.16g %llu  %g %g %g %g %g %g  %g %g %g %g %g %g %g %g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %g %g %g  %g %g %g %g %g \n",
+                All.Time, (unsigned long long)P[n].ID,  P[n].Mass, BPP(n).BH_Mass, mass_disk, BPP(n).BH_Mdot, mdot_disk, dt, BPP(n).DensAroundStar*All.cf_a3inv, BlackholeTempInfo[i].BH_InternalEnergy, BlackholeTempInfo[i].Sfr_in_Kernel,
+                BlackholeTempInfo[i].Mgas_in_Kernel, BlackholeTempInfo[i].Mstar_in_Kernel, MgasBulge, MstarBulge, r0, P[n].Pos[0], P[n].Pos[1], P[n].Pos[2],  P[n].Vel[0], P[n].Vel[1], P[n].Vel[2],
+                BlackholeTempInfo[i].Jgas_in_Kernel[0], BlackholeTempInfo[i].Jgas_in_Kernel[1], BlackholeTempInfo[i].Jgas_in_Kernel[2], BlackholeTempInfo[i].Jstar_in_Kernel[0], BlackholeTempInfo[i].Jstar_in_Kernel[1], BlackholeTempInfo[i].Jstar_in_Kernel[2], BlackholeTempInfo[i].Bondi_Radius_Weighted, BPP(n).Yuan18_BH_Mdot_Bondi); fflush(FdBlackHolesDetails);
+#endif
+#else
         fprintf(FdBlackHolesDetails, "%.16g %llu  %g %g %g %g %g %g  %g %g %g %g %g %g %g %g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %g %g %g  %g %g %g\n",
                 All.Time, (unsigned long long)P[n].ID,  P[n].Mass, BPP(n).BH_Mass, mass_disk, BPP(n).BH_Mdot, mdot_disk, dt, BPP(n).DensAroundStar*All.cf_a3inv, BlackholeTempInfo[i].BH_InternalEnergy, BlackholeTempInfo[i].Sfr_in_Kernel,
                 BlackholeTempInfo[i].Mgas_in_Kernel, BlackholeTempInfo[i].Mstar_in_Kernel, MgasBulge, MstarBulge, r0, P[n].Pos[0], P[n].Pos[1], P[n].Pos[2],  P[n].Vel[0], P[n].Vel[1], P[n].Vel[2],
                 BlackholeTempInfo[i].Jgas_in_Kernel[0], BlackholeTempInfo[i].Jgas_in_Kernel[1], BlackholeTempInfo[i].Jgas_in_Kernel[2], BlackholeTempInfo[i].Jstar_in_Kernel[0], BlackholeTempInfo[i].Jstar_in_Kernel[1], BlackholeTempInfo[i].Jstar_in_Kernel[2] ); fflush(FdBlackHolesDetails);
+#endif
 #else
 
 #ifndef IO_REDUCED_MODE
-        fprintf(FdBlackHolesDetails, "BH=%llu %.16g %g %g %g %g %g %g %g   %2.16g %2.16g %2.16g\n", (unsigned long long)P[n].ID, All.Time, BPP(n).BH_Mass, mass_disk, P[n].Mass, BPP(n).BH_Mdot, mdot_disk,
-                P[n].DensAroundStar*All.cf_a3inv, BlackholeTempInfo[i].BH_InternalEnergy, P[n].Pos[0], P[n].Pos[1], P[n].Pos[2]); fflush(FdBlackHolesDetails);           // DAA: DensAroundStar is actually not defined in BHP->BPP...
+        fprintf(FdBlackHolesDetails, "BH=%llu %.16g %g %g %g %g %g %g %g   %2.16g %2.16g %2.16g\n", 
+                (unsigned long long)P[n].ID, All.Time, BPP(n).BH_Mass, mass_disk, P[n].Mass, BPP(n).BH_Mdot, mdot_disk,
+                P[n].DensAroundStar*All.cf_a3inv, BlackholeTempInfo[i].BH_InternalEnergy, P[n].Pos[0], P[n].Pos[1], P[n].Pos[2]); 
+        fflush(FdBlackHolesDetails);           
 #endif
 #endif
 

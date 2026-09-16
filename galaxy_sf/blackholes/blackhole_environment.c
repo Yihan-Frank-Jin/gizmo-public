@@ -30,6 +30,9 @@ struct INPUT_STRUCT_NAME
 #if defined(BH_GRAVCAPTURE_GAS) || (BH_GRAVACCRETION == 8)
     MyDouble Mass;
 #endif
+#ifdef BH_YUAN18_ACCRETION
+    MyDouble BH_Mass;
+#endif
 #if defined(BH_GRAVCAPTURE_FIXEDSINKRADIUS)
     MyFloat SinkRadius;
 #endif  
@@ -52,6 +55,9 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
     in->Hsml = PPP[i].Hsml; in->ID = P[i].ID;
 #if defined(BH_GRAVCAPTURE_GAS) || (BH_GRAVACCRETION == 8)
     in->Mass = P[i].Mass;
+#endif
+#ifdef BH_YUAN18_ACCRETION
+    in->BH_Mass = BPP(i).BH_Mass;
 #endif
 #ifdef BH_GRAVCAPTURE_FIXEDSINKRADIUS
     in->SinkRadius = PPP[i].SinkRadius;
@@ -261,7 +267,9 @@ int blackhole_environment_evaluate(int target, int mode, int *exportflag, int *e
                         out.BH_InternalEnergy += wt*SphP[j].InternalEnergy;
                         out.Jgas_in_Kernel[0] += wt*(dP[1]*dv[2] - dP[2]*dv[1]); out.Jgas_in_Kernel[1] += wt*(dP[2]*dv[0] - dP[0]*dv[2]); out.Jgas_in_Kernel[2] += wt*(dP[0]*dv[1] - dP[1]*dv[0]);
 #if defined(BH_OUTPUT_MOREINFO)
+#ifdef GALSF // Only for testing
                         out.Sfr_in_Kernel += SphP[j].Sfr;
+#endif // Only for testing
 #endif
 #if defined(BH_BONDI) || defined(BH_DRAG) || (BH_GRAVACCRETION >= 5) || defined(SINGLE_STAR_SINK_DYNAMICS) || defined(SINGLE_STAR_TIMESTEPPING)
                         for(k=0;k<3;k++) {out.BH_SurroundingGasVel[k] += wt*dv[k];}
@@ -345,6 +353,7 @@ int blackhole_environment_evaluate(int target, int mode, int *exportflag, int *e
                         } /* if(vrel < vbound) */
                     } /* type check */
 #endif // BH_GRAVCAPTURE_GAS
+
                 } // ( (P[j].Mass > 0) && (P[j].Type != 5) && (P[j].ID != local.ID) ) - condition for entering primary loop
             } // numngb_inbox loop
         } // while(startnode)
@@ -367,7 +376,132 @@ void blackhole_environment_loop(void)
 #include "../../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */
 
 
+/* ============================================================================
+ * BH_YUAN18_ACCRETION: Dedicated all-gas loops for the weighted Bondi radius.
+ *
+ * The Yuan18 Bondi radius estimator is a global inflow-weighted quantity:
+ *     r_B,wtd = sum_j m_j |v_rad,j| (G M_BH / u_j) / sum_j m_j |v_rad,j|,
+ * over all gas with v_rad < 0. Do not stop at the first radius containing
+ * inflow; that creates a hard branch between inner and outer inflow populations.
+ * ============================================================================ */
+#ifdef BH_YUAN18_ACCRETION
 
+struct yuan18_active_bh_data
+{
+    MyDouble Pos[3]; MyFloat Vel[3];
+    MyDouble BH_Mass;
+    MyFloat R_flux_phys;
+    int OwnerTask;
+    int LocalIndex;
+};
+
+static int yuan18_gather_active_bh_list(struct yuan18_active_bh_data **bh_list_out)
+{
+    int i, k, task, n_global_bh = 0, n_local_bh = N_active_loc_BHs;
+    int *counts = (int *) malloc(NTask * sizeof(int));
+    int *byte_counts = (int *) malloc(NTask * sizeof(int));
+    int *byte_offsets = (int *) malloc(NTask * sizeof(int));
+    if((counts == NULL) || (byte_counts == NULL) || (byte_offsets == NULL)) {endrun(8889);}
+
+    MPI_Allgather(&n_local_bh, 1, MPI_INT, counts, 1, MPI_INT, MPI_COMM_WORLD);
+    for(task = 0; task < NTask; task++)
+    {
+        if(counts[task] < 0) {endrun(8890);}
+        byte_counts[task] = counts[task] * (int) sizeof(struct yuan18_active_bh_data);
+        byte_offsets[task] = n_global_bh * (int) sizeof(struct yuan18_active_bh_data);
+        n_global_bh += counts[task];
+    }
+
+    if(n_global_bh <= 0)
+    {
+        free(byte_offsets); free(byte_counts); free(counts);
+        *bh_list_out = NULL;
+        return 0;
+    }
+
+    struct yuan18_active_bh_data *local_bhs =
+        (struct yuan18_active_bh_data *) malloc(DMAX(n_local_bh, 1) * sizeof(struct yuan18_active_bh_data));
+    struct yuan18_active_bh_data *all_bhs =
+        (struct yuan18_active_bh_data *) malloc(n_global_bh * sizeof(struct yuan18_active_bh_data));
+    if((local_bhs == NULL) || (all_bhs == NULL)) {endrun(8891);}
+
+    for(i = 0; i < n_local_bh; i++)
+    {
+        int n = BlackholeTempInfo[i].index;
+        for(k = 0; k < 3; k++) {local_bhs[i].Pos[k] = P[n].Pos[k]; local_bhs[i].Vel[k] = P[n].Vel[k];}
+        local_bhs[i].BH_Mass = BPP(n).BH_Mass;
+        if(BlackholeTempInfo[i].Bondi_WeightSum > 0)
+        {
+            local_bhs[i].R_flux_phys = BlackholeTempInfo[i].BondiRadius_WeightedSum / BlackholeTempInfo[i].Bondi_WeightSum;
+        } else {
+            local_bhs[i].R_flux_phys = BPP(n).Yuan18_BH_Bondi_Radius;
+        }
+        local_bhs[i].OwnerTask = ThisTask;
+        local_bhs[i].LocalIndex = i;
+    }
+
+    MPI_Allgatherv(local_bhs, n_local_bh * (int) sizeof(struct yuan18_active_bh_data), MPI_BYTE,
+                   all_bhs, byte_counts, byte_offsets, MPI_BYTE, MPI_COMM_WORLD);
+
+    free(local_bhs); free(byte_offsets); free(byte_counts); free(counts);
+    *bh_list_out = all_bhs;
+    return n_global_bh;
+}
+
+void blackhole_bondi_radius_loop(void)
+{
+    int b, j, k;
+    struct yuan18_active_bh_data *bh_list = NULL;
+    int n_global_bh = yuan18_gather_active_bh_list(&bh_list);
+    if(n_global_bh <= 0) {CPU_Step[CPU_BLACKHOLES] += measure_time(); return;}
+
+    double *local_sum = (double *) calloc(2 * n_global_bh, sizeof(double));
+    double *global_sum = (double *) calloc(2 * n_global_bh, sizeof(double));
+    if((local_sum == NULL) || (global_sum == NULL)) {endrun(8892);}
+
+    for(b = 0; b < n_global_bh; b++)
+    {
+        for(j = 0; j < N_gas; j++)
+        {
+            if((P[j].Mass <= 0) || (P[j].Type != 0)) {continue;}
+
+            double dP[3], dv[3];
+            for(k = 0; k < 3; k++) {dP[k] = P[j].Pos[k] - bh_list[b].Pos[k]; dv[k] = P[j].Vel[k] - bh_list[b].Vel[k];}
+            NEAREST_XYZ(dP[0], dP[1], dP[2], -1);
+            NGB_SHEARBOX_BOUNDARY_VELCORR_(bh_list[b].Pos, P[j].Pos, dv, -1);
+
+            double r2 = dP[0]*dP[0] + dP[1]*dP[1] + dP[2]*dP[2];
+            if(r2 <= 0) {continue;}
+
+            double r_dist = sqrt(r2);
+            double v_rad_code = (dv[0]*dP[0] + dv[1]*dP[1] + dv[2]*dP[2]) / r_dist;
+            double v_rad = yuan18_physical_velocity_from_code(v_rad_code);
+            if(v_rad >= 0) {continue;}
+
+            double u_j = SphP[j].InternalEnergy;
+            if(u_j <= 0) {continue;}
+
+            double weight_j = P[j].Mass * fabs(v_rad);
+            local_sum[2*b]     += weight_j * All.G * bh_list[b].BH_Mass / u_j;
+            local_sum[2*b + 1] += weight_j;
+        }
+    }
+
+    MPI_Allreduce(local_sum, global_sum, 2 * n_global_bh, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    for(b = 0; b < n_global_bh; b++)
+    {
+        if(bh_list[b].OwnerTask != ThisTask) {continue;}
+        int i = bh_list[b].LocalIndex;
+        BlackholeTempInfo[i].BondiRadius_WeightedSum = global_sum[2*b];
+        BlackholeTempInfo[i].Bondi_WeightSum = global_sum[2*b + 1];
+    }
+
+    free(global_sum); free(local_sum); free(bh_list);
+    CPU_Step[CPU_BLACKHOLES] += measure_time();
+}
+ 
+#endif /* BH_YUAN18_ACCRETION */
+ 
 
 
 
@@ -454,6 +588,126 @@ CPU_Step[CPU_BLACKHOLES] += measure_time(); /* collect timings and reset clock f
 #endif   //BH_GRAVACCRETION == 0
 
 
+/* -----------------------------------------------------------------------------------------------------
+ * Mass flux loop for BH_YUAN18_ACCRETION: compute the inward mass flux through the weighted Bondi sphere.
+ * ----------------------------------------------------------------------------------------------------- */
+#ifdef BH_YUAN18_ACCRETION
 
+static inline void yuan18_fibonacci_sphere_direction(int q, double *dir)
+{
+    double z = 1.0 - 2.0 * (((double)q + 0.5) / ((double)YUAN18_BONDI_FLUX_N_SAMPLES));
+    double phi = 2.0 * M_PI * ((double)q) * YUAN18_GOLDEN_RATIO_CONJUGATE;
+    double r_xy = sqrt(DMAX(0.0, 1.0 - z*z));
+    dir[0] = r_xy * cos(phi);
+    dir[1] = r_xy * sin(phi);
+    dir[2] = z;
+}
+
+void blackhole_mass_flux_loop(void)
+{
+    int b, i, j, k, q;
+    for(i=0; i<N_active_loc_BHs; i++)
+    {
+        BlackholeTempInfo[i].Yuan18_Mdot_Flux = 0;
+        BlackholeTempInfo[i].Yuan18_Flux_WeightSum = 0;
+        for(q=0; q<YUAN18_BONDI_FLUX_N_SAMPLES; q++)
+        {
+            BlackholeTempInfo[i].Yuan18_Rho_Sample[q] = 0;
+            BlackholeTempInfo[i].Yuan18_Rhovr_Sample[q] = 0;
+            BlackholeTempInfo[i].Yuan18_Wt_Sample[q] = 0;
+        }
+    }
+
+    struct yuan18_active_bh_data *bh_list = NULL;
+    int n_global_bh = yuan18_gather_active_bh_list(&bh_list);
+    if(n_global_bh <= 0) {CPU_Step[CPU_BLACKHOLES] += measure_time(); return;}
+
+    int n_samples = YUAN18_BONDI_FLUX_N_SAMPLES;
+    int n_reduce = 3 * n_samples * n_global_bh;
+    double *local_sample = (double *) calloc(n_reduce, sizeof(double));
+    double *global_sample = (double *) calloc(n_reduce, sizeof(double));
+    if((local_sample == NULL) || (global_sample == NULL)) {endrun(8893);}
+
+#define YUAN18_SAMPLE_INDEX(bh_index, block, sample_index) (((bh_index) * 3 + (block)) * n_samples + (sample_index))
+
+    for(b = 0; b < n_global_bh; b++)
+    {
+        double R_flux_phys = bh_list[b].R_flux_phys;
+        if(R_flux_phys <= 0) {continue;}
+        double R_flux_code = yuan18_code_length_from_physical(R_flux_phys);
+        if(R_flux_code <= 0) {continue;}
+
+        for(j = 0; j < N_gas; j++)
+        {
+            if((P[j].Mass <= 0) || (P[j].Type != 0) || (PPP[j].Hsml <= 0)) {continue;}
+
+            double dP[3], dv[3];
+            for(k = 0; k < 3; k++) {dP[k] = P[j].Pos[k] - bh_list[b].Pos[k]; dv[k] = P[j].Vel[k] - bh_list[b].Vel[k];}
+            NEAREST_XYZ(dP[0], dP[1], dP[2], -1);
+            NGB_SHEARBOX_BOUNDARY_VELCORR_(bh_list[b].Pos, P[j].Pos, dv, -1);
+
+            double r_center = sqrt(dP[0]*dP[0] + dP[1]*dP[1] + dP[2]*dP[2]);
+            double H_j = PPP[j].Hsml;
+            if(fabs(r_center - R_flux_code) >= H_j) {continue;}
+
+            double hinv = 1.0 / H_j, hinv3 = hinv*hinv*hinv, hinv4 = hinv3*hinv;
+            for(q = 0; q < n_samples; q++)
+            {
+                double dir[3], dS[3], r2_sample = 0, wk = 0, dwk = 0;
+                yuan18_fibonacci_sphere_direction(q, dir);
+                for(k = 0; k < 3; k++)
+                {
+                    double sample_pos_k = bh_list[b].Pos[k] + R_flux_code * dir[k];
+                    dS[k] = P[j].Pos[k] - sample_pos_k;
+                }
+                NEAREST_XYZ(dS[0], dS[1], dS[2], -1);
+                for(k = 0; k < 3; k++) {r2_sample += dS[k]*dS[k];}
+                if(r2_sample >= H_j*H_j) {continue;}
+
+                kernel_main(sqrt(r2_sample) * hinv, hinv3, hinv4, &wk, &dwk, -1);
+                if(wk <= 0) {continue;}
+
+                double vr_code = 0;
+                for(k = 0; k < 3; k++) {vr_code += dv[k] * dir[k];}
+                double vr_phys = yuan18_physical_velocity_from_code(vr_code);
+
+                local_sample[YUAN18_SAMPLE_INDEX(b, 0, q)] += P[j].Mass * wk;
+                local_sample[YUAN18_SAMPLE_INDEX(b, 1, q)] += P[j].Mass * wk * vr_phys;
+                local_sample[YUAN18_SAMPLE_INDEX(b, 2, q)] += wk;
+            }
+        }
+    }
+
+    MPI_Allreduce(local_sample, global_sample, n_reduce, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+    for(b = 0; b < n_global_bh; b++)
+    {
+        if(bh_list[b].OwnerTask != ThisTask) {continue;}
+        i = bh_list[b].LocalIndex;
+        double R_flux_phys = bh_list[b].R_flux_phys;
+        if(R_flux_phys <= 0) {continue;}
+
+        double sample_area = 4*M_PI * R_flux_phys * R_flux_phys / n_samples;
+        for(q = 0; q < n_samples; q++)
+        {
+            double rho_code = global_sample[YUAN18_SAMPLE_INDEX(b, 0, q)];
+            if(rho_code <= 0) {continue;}
+            double rho_q = yuan18_physical_density_from_code(rho_code);
+            double vr_q = global_sample[YUAN18_SAMPLE_INDEX(b, 1, q)] / rho_code;
+            BlackholeTempInfo[i].Yuan18_Mdot_Flux += sample_area * rho_q * DMAX(-vr_q, 0.0);
+            BlackholeTempInfo[i].Yuan18_Rho_Sample[q] = rho_q;
+            BlackholeTempInfo[i].Yuan18_Rhovr_Sample[q] =
+                yuan18_physical_density_from_code(global_sample[YUAN18_SAMPLE_INDEX(b, 1, q)]);
+            BlackholeTempInfo[i].Yuan18_Wt_Sample[q] = global_sample[YUAN18_SAMPLE_INDEX(b, 2, q)];
+            BlackholeTempInfo[i].Yuan18_Flux_WeightSum += BlackholeTempInfo[i].Yuan18_Wt_Sample[q];
+        }
+    }
+
+#undef YUAN18_SAMPLE_INDEX
+    free(global_sample); free(local_sample); free(bh_list);
+    CPU_Step[CPU_BLACKHOLES] += measure_time();
+}
+
+#endif // BH_YUAN18_ACCRETION
 
 #endif // top-level flag

@@ -14,9 +14,16 @@
 #include "./allvars.h"
 #include "./proto.h"
 #include "./kernel.h"
-#ifdef BH_WIND_SPAWN
+#if defined(BH_WIND_SPAWN) || defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
+#define BH_SPAWNED_OUTFLOW_PARTICLES
+#endif
+
+/* Only MFV can grow a spawned element through inter-cell mass flux. Fixed-mass MFM/SPH
+   outflows must remain on the kinematically protected low-mass merger path below. */
+#if defined(BH_SPAWNED_OUTFLOW_PARTICLES) && defined(HYDRO_MESHLESS_FINITE_VOLUME)
+#define BH_SPAWNED_OUTFLOW_MASS_PROMOTION
 #define MASS_THRESHOLD_FOR_WINDPROMO(i) (DMAX(5.*target_mass_for_wind_spawning(i),0.25*All.MaxMassForParticleSplit))
-#endif /* define a mass threshold for this model above which a 'hyper-element' has accreted enough to be treated as 'normal' */
+#endif /* variable-mass outflow element has accreted enough mass to be treated as normal */
 
 
 /*! This file contains the operations needed for merging/splitting gas particles/cells on-the-fly in the simulations.
@@ -50,13 +57,13 @@ int does_particle_need_to_be_merged(int i)
     if(P[i].Type>0) {return 0;} // don't allow merging of collisionless particles [only splitting, in these runs]
     if(is_particle_a_special_zoom_target(i)) {return 0;}
 #endif
-#ifdef BH_WIND_SPAWN
+#ifdef BH_SPAWNED_OUTFLOW_PARTICLES
     if(P[i].ID==All.AGNWindID && P[i].Type==0)
     {
 #ifdef BH_DEBUG_SPAWN_JET_TEST
         MyFloat vr2 = (P[i].Vel[0]*P[i].Vel[0] + P[i].Vel[1]*P[i].Vel[1] + P[i].Vel[2]*P[i].Vel[2]) * All.cf_a2inv; // physical
         if(vr2 <= 0.01 * All.BAL_v_outflow*All.BAL_v_outflow) {return 1;} else {return 0;} // merge only if velocity condition satisfied, even if surrounded by more massive particles //
-#else
+#elif defined(BH_SPAWNED_OUTFLOW_MASS_PROMOTION)
         if(P[i].Mass >= MASS_THRESHOLD_FOR_WINDPROMO(i)*target_mass_renormalization_factor_for_mergesplit(i,0)) {return 1;}
 #endif
     }
@@ -371,19 +378,23 @@ void merge_and_split_particles(void)
 #ifdef GALSF_MERGER_STARCLUSTER_PARTICLES
                         if(P[i].Type==4 && P[j].Type==4) {m_eff=evaluate_starstar_merger_for_starcluster_particle_pair(i,j); if(m_eff<=0) {do_allow_merger=0;} else {do_allow_merger=1;}}
 #endif
-#ifdef BH_WIND_SPAWN
+#ifdef BH_SPAWNED_OUTFLOW_PARTICLES
                         if(P[i].ID==All.AGNWindID && P[i].Type==0)
                         {
+#ifdef BH_SPAWNED_OUTFLOW_MASS_PROMOTION
                             if(P[i].Mass>=MASS_THRESHOLD_FOR_WINDPROMO(i))
                             {
                                 if((P[j].ID != All.AGNWindID) || (P[j].Mass >= MASS_THRESHOLD_FOR_WINDPROMO(j))) {do_allow_merger *= 1;} else {do_allow_merger = 0;}
-                            } else if(do_allow_merger) {
+                            }
+                            else
+#endif
+                            if(do_allow_merger) {
                                 double v2_tmp=0,vr_tmp=0; int ktmp=0; for(ktmp=0;ktmp<3;ktmp++) {v2_tmp+=(P[i].Vel[ktmp]-P[j].Vel[ktmp])*(P[i].Vel[ktmp]-P[j].Vel[ktmp]); vr_tmp+=(P[i].Vel[ktmp]-P[j].Vel[ktmp])*(P[i].Pos[ktmp]-P[j].Pos[ktmp]);}
                                 if(vr_tmp > 0) {do_allow_merger = 0;}
                                 if(v2_tmp > 0) {v2_tmp=sqrt(v2_tmp*All.cf_a2inv);} else {v2_tmp=0;}
                                 if(P[j].ID == All.AGNWindID) {do_allow_merger = 0;} // wind particles can't intermerge
                                 if(v2_tmp >  DMIN(Get_Gas_effective_soundspeed_i(i),Get_Gas_effective_soundspeed_i(j))*All.cf_afac3) {do_allow_merger = 0;}
-#if !(defined(SINGLE_STAR_FB_JETS) || defined(SINGLE_STAR_FB_WINDS))
+#if defined(BH_WIND_SPAWN) && !(defined(SINGLE_STAR_FB_JETS) || defined(SINGLE_STAR_FB_WINDS))
                                 if((v2_tmp > 0.25*All.BAL_v_outflow) && (v2_tmp > 0.9*Get_Gas_effective_soundspeed_i(j)*All.cf_afac3)) {do_allow_merger=0;}
 #endif
                             }
@@ -580,6 +591,18 @@ int split_particle_i(int i, int n_particles_split, int i_nearest)
         /* boost the condition number to be conservative, so we don't trigger madness in the kernel */
         SphP[i].ConditionNumber *= 10.0;
         SphP[j].ConditionNumber = SphP[i].ConditionNumber;
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+        SphP[j].Yuan18WindMass = mass_of_new_particle * SphP[i].Yuan18WindMass;
+        SphP[i].Yuan18WindMass -= SphP[j].Yuan18WindMass;
+        SphP[j].Yuan18WindEnergy = mass_of_new_particle * SphP[i].Yuan18WindEnergy;
+        SphP[i].Yuan18WindEnergy -= SphP[j].Yuan18WindEnergy;
+        for(k=0;k<3;k++)
+        {
+            SphP[j].Yuan18WindMomentum[k] = mass_of_new_particle * SphP[i].Yuan18WindMomentum[k];
+            SphP[i].Yuan18WindMomentum[k] -= SphP[j].Yuan18WindMomentum[k];
+        }
+        SphP[j].Yuan18WindLastMode = SphP[i].Yuan18WindLastMode;
+#endif
 #ifdef MAGNETIC
         /* we evolve the -conserved- VB and Vphi, so this must be partitioned */
         for(k=0;k<3;k++) {
@@ -752,7 +775,7 @@ int merge_particles_ij(int i, int j)
     if(((P[i].Type==0)||(P[j].Type==0)) && (P[j].Type!=P[i].Type)) {printf("WARNING: code is trying to merge a gas cell with a non-gas particle. I dont know how to do this. Exiting the merge subroutine."); fflush(stdout); return 0;}
 
     int swap_ids = 0; if(P[i].Mass > P[j].Mass) {swap_ids = 1;} /* retain the IDs of the more massive progenitor */
-#ifdef BH_WIND_SPAWN
+#ifdef BH_SPAWNED_OUTFLOW_PARTICLES
     if(P[i].ID == All.AGNWindID) {swap_ids = 0;} /* don't copy an agn wind id */
     if(P[j].ID == All.AGNWindID) {P[j].ID = All.AGNWindID + 1;} /* offset this to avoid checks through code */
 #endif
@@ -931,6 +954,12 @@ int merge_particles_ij(int i, int j)
     SphP[j].MaxSignalVel = sqrt(SphP[j].MaxSignalVel*SphP[j].MaxSignalVel + SphP[i].MaxSignalVel*SphP[i].MaxSignalVel); /* need to be conservative */
     PPP[j].Hsml = pow(pow(PPP[j].Hsml,NUMDIMS)+pow(PPP[i].Hsml,NUMDIMS),1.0/NUMDIMS); /* sum the volume of the two particles */
     SphP[j].ConditionNumber = SphP[j].ConditionNumber + SphP[i].ConditionNumber; /* sum to be conservative */
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+    SphP[j].Yuan18WindMass += SphP[i].Yuan18WindMass;
+    SphP[j].Yuan18WindEnergy += SphP[i].Yuan18WindEnergy;
+    for(k=0;k<3;k++) {SphP[j].Yuan18WindMomentum[k] += SphP[i].Yuan18WindMomentum[k];}
+    if(SphP[i].Yuan18WindLastMode != 0) {SphP[j].Yuan18WindLastMode = SphP[i].Yuan18WindLastMode;}
+#endif
 #ifdef ENERGY_ENTROPY_SWITCH_IS_ACTIVE
     SphP[j].MaxKineticEnergyNgb = DMAX(SphP[j].MaxKineticEnergyNgb,SphP[i].MaxKineticEnergyNgb); /* for the entropy/energy switch condition */
 #endif

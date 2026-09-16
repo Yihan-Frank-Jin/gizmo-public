@@ -481,6 +481,12 @@ int hydro_force_evaluate(int target, int mode, int *exportflag, int *exportnodec
                 if(!(TimeBinActive[P[j].TimeBin]))
                 {
                     if(kernel.vsig > WAKEUP*SphP[j].MaxSignalVel) {
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+                        timestep_limiter_diagnostics_record_wakeup_request(
+                            j, local.Type, local.ID, local.ID_child_number,
+                            local.ID_generation, kernel.vsig, SphP[j].MaxSignalVel,
+                            "hydro_signal_velocity");
+#endif
                         #pragma omp atomic write
                         PPPZ[j].wakeup = 1;
                         #pragma omp atomic write

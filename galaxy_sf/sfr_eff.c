@@ -510,6 +510,9 @@ void star_formation_parent_routine(void)
 #ifdef BH_WIND_SPAWN
                         P[i].unspawned_wind_mass = 0;
 #endif
+#ifdef BH_YUAN18_RADIATION
+                        P[i].Yuan18_BH_L_rad = 0;
+#endif
 #ifdef BH_COUNTPROGS
                         P[i].BH_CountProgs = 1;
 #endif
@@ -604,6 +607,9 @@ void star_formation_parent_routine(void)
                                 P[i].BH_TimeBinGasNeighbor = P[i].TimeBin;
 #endif
                                 P[i].BH_Mdot = 0;
+#ifdef BH_YUAN18_RADIATION
+                                P[i].Yuan18_BH_L_rad = 0;
+#endif
                                 P[i].DensAroundStar = SphP[i].Density;
                                 
 #ifdef OUTPUT_SINK_FORMATION_PROPS //save the at-formation properties of sink particles

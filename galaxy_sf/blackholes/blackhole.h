@@ -12,6 +12,40 @@
 #define BHPOTVALUEINIT 1.0e30
 extern int N_active_loc_BHs;    /*!< number of active black holes on the LOCAL processor */
 
+#ifdef BH_YUAN18_ACCRETION
+/* Yuan18/MACER subgrid formulae are evaluated with physical lengths, peculiar
+ * velocities, densities, and times.  GIZMO stores positions/smoothing lengths
+ * in comoving units and velocities as the canonical momentum a*v_pec.  Keep
+ * every conversion at an explicit boundary so the Newtonian case remains the
+ * a=1 special case supplied by set_cosmo_factors_for_current_time(). */
+static inline double yuan18_physical_length_from_code(double length_code)
+{
+    return length_code * All.cf_atime;
+}
+
+static inline double yuan18_code_length_from_physical(double length_physical)
+{
+    if(All.cf_atime <= 0) {return 0;}
+    return length_physical / All.cf_atime;
+}
+
+static inline double yuan18_physical_velocity_from_code(double velocity_code)
+{
+    if(All.cf_atime <= 0) {return 0;}
+    return velocity_code / All.cf_atime;
+}
+
+static inline double yuan18_code_velocity_from_physical(double velocity_physical)
+{
+    return velocity_physical * All.cf_atime;
+}
+
+static inline double yuan18_physical_density_from_code(double density_code)
+{
+    return density_code * All.cf_a3inv;
+}
+#endif
+
 extern struct blackhole_temp_particle_data       // blackholedata_topass
 {
     MyIDType index;
@@ -25,6 +59,9 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
     MyLongDouble accreted_Mass;
     MyLongDouble accreted_BH_Mass;
     MyLongDouble accreted_BH_Mass_alphadisk;
+#ifdef BH_YUAN18_JET_SPAWN
+    MyLongDouble accreted_Yuan18_jet_reservoir_mass;
+#endif
 #if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
     MyLongDouble BH_AccretionDeficit;
 #endif
@@ -80,9 +117,65 @@ extern struct blackhole_temp_particle_data       // blackholedata_topass
 #endif
 #if defined(BH_RETURN_BFLUX)
     MyFloat kernel_norm_topass_in_swallowloop;
-#endif    
+#endif
+#ifdef BH_YUAN18_ACCRETION
+#ifndef YUAN18_BONDI_FLUX_N_SAMPLES
+#define YUAN18_BONDI_FLUX_N_SAMPLES 512 /* surface samples for Yuan18 Bondi inflow and continuous wind projection */
+#endif
+#if defined(BH_YUAN18_WIND_CONTINUOUS) && ((YUAN18_BONDI_FLUX_N_SAMPLES % 2) != 0)
+#error "BH_YUAN18_WIND_CONTINUOUS requires an even YUAN18_BONDI_FLUX_N_SAMPLES for exact antipodal pairing."
+#endif
+#define YUAN18_GOLDEN_RATIO_CONJUGATE 0.6180339887498948482 /* low-discrepancy azimuth increment */
+    MyFloat BondiRadius_WeightedSum;
+    MyFloat Bondi_WeightSum;
+    MyFloat Bondi_Radius_Weighted;
+    MyFloat Yuan18_Mdot_Flux;       /* physical inward mass flux through the Bondi sphere [code mass / physical code time] */
+    MyFloat Yuan18_Flux_WeightSum;  /* diagnostic sum of comoving-kernel coverage over the Fibonacci sphere */
+    MyFloat Yuan18_Rho_Sample[YUAN18_BONDI_FLUX_N_SAMPLES];   /* physical density at each surface sample */
+    MyFloat Yuan18_Rhovr_Sample[YUAN18_BONDI_FLUX_N_SAMPLES]; /* physical density times physical radial velocity */
+    MyFloat Yuan18_Wt_Sample[YUAN18_BONDI_FLUX_N_SAMPLES];
+    MyFloat Yuan18_v_wind;              /* physical wind launch speed */
+    MyFloat Yuan18_eps_wind;            /* physical specific internal energy */
+    MyFloat Yuan18_f_accreted;           /* mdot_bh / mdot_bondi; used by BH_WIND_KICK path */
+    MyFloat Yuan18_mdot_wind;            /* physical mass rate mdot_bondi - mdot_bh (>= 0) */
+#ifdef BH_YUAN18_JET_SPAWN
+    MyFloat Yuan18_mdot_jet;             /* physical hot-mode jet mass rate: 0.5 * mdot_bh in yuan18.cpp */
+    MyFloat Yuan18_v_jet;                /* physical hot-mode jet speed: 0.3c in yuan18.cpp */
+    MyFloat Yuan18_eps_jet;              /* physical hot-mode jet specific thermal energy: zero in yuan18.cpp */
+#endif
+    int     Yuan18_mode_wind;            /* matches yuan18.cpp OutflowMode: 0=NONE, 1=HOT, 2=SUB, 3=SUP, 4=JET */
+    MyFloat Yuan18_L_rad;                /* physical eps_rad * mdot_bh * c^2 [code energy / physical code time] */
+    MyFloat Yuan18_r_inject;            /* injection/coupling surface (physical): weighted Bondi radius for all Yuan18 wind modes */
+    MyFloat Yuan18_J_dir[3];             /* normalized Yuan18 wind axis for feedback coupling */
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+    MyFloat Yuan18_wind_angle_weighted_kernel_sum; /* diagnostic Yuan18 wind surface coverage normalization */
+    MyFloat Yuan18_wind_angle_weighted_kernel_sum_pos; /* diagnostic positive Yuan18-axis hemisphere coverage */
+    MyFloat Yuan18_wind_angle_weighted_kernel_sum_neg; /* diagnostic negative Yuan18-axis hemisphere coverage */
+    MyFloat Yuan18_wind_surface_weight_sum[YUAN18_BONDI_FLUX_N_SAMPLES]; /* per-surface-sample gas ownership denominator for conservative wind projection */
+    MyLongDouble Yuan18_wind_mass_coupled; /* actual continuous-wind mass coupled during this BH step */
+    MyLongDouble Yuan18_wind_intrinsic_momentum_code[3]; /* coupled wind momentum relative to the BH in canonical code units */
+#endif
+#endif
 }
 *BlackholeTempInfo;
+
+
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+static inline int yuan18_continuous_wind_recipient_is_eligible(int j)
+{
+    if((P[j].Type != 0) || (P[j].Mass <= 0) || (SphP[j].Density <= 0) || (PPP[j].Hsml <= 0)) return 0;
+#ifdef BH_YUAN18_JET_SPAWN
+    if(P[j].ID == All.AGNWindID) return 0;
+#endif
+
+    /* Continuous injection is a source term on the resolved gas surface. A gas cell must remain
+       eligible while its kernel overlaps that surface; permanently excluding it after the first
+       contribution exhausts every recipient when the Bondi surface is represented by a fixed,
+       finite set of cells. Spawned jet cells remain excluded above because they are a separate
+       ballistic feedback population. */
+    return 1;
+}
+#endif
 
 
 /* blackhole_utils.c */
@@ -103,13 +196,38 @@ void blackhole_environment_loop(void);
 #ifdef BH_GRAVACCRETION
 void blackhole_environment_second_loop(void);
 #endif
-
+#ifdef BH_YUAN18_ACCRETION
+void blackhole_bondi_radius_loop(void); /* dedicated all-gas loop for weighted Bondi radius */
+void blackhole_mass_flux_loop(void);
+double yuan18_bh_luminosity(double mdot_bh, double bh_mass);
+#endif
 /* blackhole_swallow_and_kick.c */
 void blackhole_swallow_and_kick_loop(void);
 double target_mass_for_wind_spawning(int i);
+#if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS)
+/* Yuan18 angular cone constants -- match yuan18.cpp InnerX1() defaults */
+#define YUAN18_COS_ANG1_HOT 0.8660  /* cos(30 deg): outer (largest |cos theta|) bound of HOT biconical shell */
+#define YUAN18_COS_ANG2_HOT 0.3420  /* cos(70 deg): inner (smallest |cos theta|) bound of HOT biconical shell */
+#define YUAN18_COS_ANG_SUP  0.8660  /* cos(30 deg): inner (smallest |cos theta|) bound of SUP polar caps */
+#define YUAN18_COS_ANG_JET 0.984807753012208 /* cos(10 deg): yuan18.cpp default jet polar cap */
+#endif
+#ifdef BH_YUAN18_WIND_SPAWN
+void get_wind_spawn_direction_yuan18(int i, int num_spawned_this_call, int n_particles_split, int mode_wind,
+                                     double *ny, double *nz,
+                                     double *veldir, double *dpdir);
+#endif
+#ifdef BH_YUAN18_JET_SPAWN
+int spawn_bh_yuan18_feedback(double *mass_spawned_out);
+#endif
+#ifdef BH_YUAN18_WIND_SPAWN
+int spawn_bh_yuan18_wind_feedback(double *mass_spawned_out);
+#endif
 
 /* blackhole_feed.c */
 void blackhole_feed_loop(void);
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+void blackhole_yuan18_wind_normalization_loop(void);
+#endif
 
 //void check_for_bh_merger(int j, MyIDType id);
 int bh_check_boundedness(int j, double vrel, double vesc, double dr_code, double sink_radius);

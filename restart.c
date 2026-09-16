@@ -52,6 +52,10 @@ void restart(int modus)
     int nprocgroup, primaryTask, groupTask;
     struct global_data_all_processes all_task0;
     int nmulti = MULTIPLEDOMAINS, regular_restarts_are_valid = 1, backup_restarts_are_valid = 1;
+
+#ifdef RT_ABSORBING_OUTFLOW_BOUNDARY
+    if(modus == 0) {rt_absorbing_outflow_boundary_flush_escaped_energy();}
+#endif
     
 
 #ifdef CHIMES 

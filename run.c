@@ -27,6 +27,95 @@
  * reached, when a `stop' file is found in the output directory, or
  * when the simulation ends because we arrived at TimeMax.
  */
+#if defined(BH_YUAN18_JET_SPAWN) && defined(OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS)
+/* This is deliberately dormant unless the environment variable below is set.
+ * It is an event-level diagnostic stop hook, not feedback physics. */
+static void yuan18_jet_spawn_diagnostic_stop_check(void)
+{
+    static int initialized = 0, enabled = 0, stop_after_syncs = 0;
+    static long long detected_sync = -1;
+    if(!initialized)
+    {
+        const char *value = getenv("GIZMO_JET_SPAWN_STOP_AFTER_BAD_SYNC");
+        if(value != NULL)
+        {
+            char *endptr = NULL;
+            long parsed_value = strtol(value, &endptr, 10);
+            if(endptr != value && *endptr == '\0' && parsed_value >= 0)
+            {
+                enabled = 1;
+                stop_after_syncs = (int)parsed_value;
+            }
+            else if(ThisTask == 0)
+            {
+                printf("[Yuan18-jet-diagnostic] ignoring invalid GIZMO_JET_SPAWN_STOP_AFTER_BAD_SYNC='%s'\n",
+                       value);
+                fflush(stdout);
+            }
+        }
+        initialized = 1;
+    }
+    if(!enabled || All.cf_atime <= 0) {return;}
+
+    int i, local_bad_state = 0, global_bad_state = 0;
+    double local_max_speed = 0, local_max_internal_energy = 0;
+    double global_max_speed = 0, global_max_internal_energy = 0;
+    const double speed_of_light = C_LIGHT_CODE;
+    const double internal_energy_limit = 0.1 * speed_of_light * speed_of_light;
+    for(i = 0; i < N_gas; i++)
+    {
+        if(P[i].Type != 0 || P[i].Mass <= 0) {continue;}
+        double v2 = 0;
+        int k;
+        for(k = 0; k < 3; k++)
+        {
+            double v_physical = P[i].Vel[k] / All.cf_atime;
+            v2 += v_physical * v_physical;
+        }
+        double speed = sqrt(v2);
+        double internal_energy = SphP[i].InternalEnergy;
+        if(isfinite(speed) && speed > local_max_speed) {local_max_speed = speed;}
+        if(isfinite(internal_energy) && internal_energy > local_max_internal_energy)
+            {local_max_internal_energy = internal_energy;}
+        if(!isfinite(speed) || !isfinite(internal_energy) || speed > speed_of_light ||
+           internal_energy > internal_energy_limit)
+            {local_bad_state = 1;}
+    }
+    MPI_Allreduce(&local_bad_state, &global_bad_state, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(&local_max_speed, &global_max_speed, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(&local_max_internal_energy, &global_max_internal_energy, 1, MPI_DOUBLE, MPI_MAX,
+                  MPI_COMM_WORLD);
+
+    if(detected_sync < 0 && global_bad_state)
+    {
+        detected_sync = All.NumCurrentTiStep;
+        if(ThisTask == 0)
+        {
+            printf("[Yuan18-jet-diagnostic] bad_state_detected sync=%lld time=%.17g max_speed=%g c=%g "
+                   "max_u=%g u_limit=%g stop_after_syncs=%d\n",
+                   detected_sync, All.Time, global_max_speed, speed_of_light, global_max_internal_energy,
+                   internal_energy_limit, stop_after_syncs);
+            fflush(stdout);
+        }
+    }
+
+    if(detected_sync >= 0 && All.NumCurrentTiStep - detected_sync >= stop_after_syncs && ThisTask == 0)
+    {
+        char stop_filename[1000];
+        sprintf(stop_filename, "%sstop", All.OutputDir);
+        FILE *fd = fopen(stop_filename, "w");
+        if(fd == NULL) {terminate("failed to create Yuan18 jet diagnostic stop file");}
+        fprintf(fd, "Yuan18 jet diagnostic requested stop after %d sync points.\n", stop_after_syncs);
+        fclose(fd);
+        printf("[Yuan18-jet-diagnostic] stop_requested sync=%lld time=%.17g "
+               "syncs_after_detection=%lld\n",
+               (long long)All.NumCurrentTiStep, All.Time,
+               (long long)(All.NumCurrentTiStep - detected_sync));
+        fflush(stdout);
+    }
+}
+#endif
+
 void run(void)
 {
     CPU_Step[CPU_MISC] += measure_time();
@@ -140,6 +229,9 @@ void run(void)
         gravity_tree();	/* re-compute gravitational accelerations for synchronous particles */
         HermiteOnlyFlag = 0;
         do_hermite_correction();
+#endif
+#if defined(BH_YUAN18_JET_SPAWN) && defined(OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS)
+        yuan18_jet_spawn_diagnostic_stop_check();
 #endif
         /* Check whether we need to interrupt the run */
         int stopflag = 0;
@@ -271,6 +363,48 @@ void calculate_non_standard_physics(void)
             if(n_unspawned> Max_Unspawned_MassUnits_fromSink) {Max_Unspawned_MassUnits_fromSink = n_unspawned;} // track the maximum integer number of elements this sink could spawn
         }}
 #endif
+#endif
+
+#ifdef BH_YUAN18_WIND_SPAWN
+        double Max_Yuan18_WindReservoirMassUnits_fromSink_global;
+        MPI_Allreduce(&Max_Yuan18_WindReservoirMassUnits_fromSink, &Max_Yuan18_WindReservoirMassUnits_fromSink_global, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        int yuan18_wind_particles_spawned = 0;
+        double yuan18_wind_mass_spawned = 0;
+        if(Max_Yuan18_WindReservoirMassUnits_fromSink_global >= BH_YUAN18_WIND_SPAWN)
+        {
+            yuan18_wind_particles_spawned = spawn_bh_yuan18_wind_feedback(&yuan18_wind_mass_spawned);
+            if(yuan18_wind_particles_spawned > 0)
+            {
+                rearrange_particle_sequence();
+            }
+            Max_Yuan18_WindReservoirMassUnits_fromSink = Max_Yuan18_WindReservoirMassUnits_fromSink_global = 0.;
+        }
+        if((ThisTask == 0) && (yuan18_wind_particles_spawned > 0))
+        {
+            printf("[Yuan18-wind-spawn] spawned_particles=%d spawned_mass=%g\n",
+                   yuan18_wind_particles_spawned, yuan18_wind_mass_spawned);
+            fflush(stdout);
+        }
+#endif
+
+#ifdef BH_YUAN18_JET_SPAWN
+        double yuan18_mass_spawned = 0;
+        int yuan18_particles_spawned = spawn_bh_yuan18_feedback(&yuan18_mass_spawned);
+        if(yuan18_particles_spawned > 0)
+        {
+            rearrange_particle_sequence();
+        }
+        if((ThisTask == 0) && (yuan18_particles_spawned > 0))
+        {
+#ifdef BH_YUAN18_JET_SPAWN_EVERY_TIMESTEP
+            printf("[Yuan18-jet-spawn] spawned_particles=%d spawned_mass=%g, cadence=every_active_hot_bh_step cells_per_bh=%d\n",
+                   yuan18_particles_spawned, yuan18_mass_spawned, 2*BH_YUAN18_JET_SPAWN);
+#else
+            printf("[Yuan18-jet-spawn] spawned_particles=%d spawned_mass=%g, minimum_batch=%d\n",
+                   yuan18_particles_spawned, yuan18_mass_spawned, BH_YUAN18_JET_SPAWN);
+#endif
+            fflush(stdout);
+        }
 #endif
         MPI_Barrier(MPI_COMM_WORLD); CPU_Step[CPU_BLACKHOLES] += measure_time();
     }
@@ -991,6 +1125,11 @@ void put_symbol(double t0, double t1, char c)
  */
 void energy_statistics(void)
 {
+#ifdef RT_ABSORBING_OUTFLOW_BOUNDARY
+  /* Radiation escape is a compact diagnostic independent of the verbose
+     global energy log, so retain it in IO_REDUCED_MODE production runs. */
+  rt_absorbing_outflow_boundary_write_statistics();
+#endif
 #ifndef IO_REDUCED_MODE
   compute_global_quantities_of_system();
 

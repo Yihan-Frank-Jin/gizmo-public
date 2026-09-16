@@ -119,7 +119,6 @@ static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, in
 }
 
 
-
 /* do loop over neighbors to get quantities for accretion */
 /*!   -- this subroutine writes to shared memory [updating the neighbor values]: need to protect these writes for openmp below. none of the modified values are read, so only the write block is protected. */
 int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportnodecount, int *exportindex, int *ngblist, int loop_iteration);
@@ -173,11 +172,13 @@ int blackhole_feed_evaluate(int target, int mode, int *exportflag, int *exportno
                     for(k=0;k<3;k++) {dpos[k] = P[j].Pos[k] - local.Pos[k]; dvel[k]=P[j].Vel[k]-local.Vel[k];}
                     NEAREST_XYZ(dpos[0],dpos[1],dpos[2],-1); r2=0; for(k=0;k<3;k++) {r2 += dpos[k]*dpos[k];}
                     NGB_SHEARBOX_BOUNDARY_VELCORR_(local.Pos,P[j].Pos,dvel,-1); /* wrap velocities for shearing boxes if needed */
+                    r=sqrt(r2);
                     double heff_j = DMAX( PPP[j].Hsml , ForceSoftening_KernelRadius(j) );
-                    if(r2 < h_i2 || r2 < heff_j*heff_j)
+                    int bh_local_candidate = (r2 < h_i2 || r2 < heff_j*heff_j);
+                    if(bh_local_candidate)
                     {
                         vrel=0; for(k=0;k<3;k++) {vrel += dvel[k]*dvel[k];}
-                        r=sqrt(r2); vrel=sqrt(vrel)/All.cf_atime;  /* relative velocity in physical units. do this once and use below */
+                        vrel=sqrt(vrel)/All.cf_atime;  /* relative velocity in physical units. do this once and use below */
 #if defined(MAGNETIC) && defined(GRAIN_LORENTZFORCE) /* need to project grain velocities, shouldn't include gyro motion */
                         if((1<<P[j].Type) & GRAIN_PTYPES) {vrel=0; double bmag2=0; for(k=0;k<3;k++) {vrel+=dvel[k]*P[j].Gas_B[k]; bmag2+=P[j].Gas_B[k]*P[j].Gas_B[k];}
                             vrel = (fabs(vrel)/sqrt(bmag2)) / All.cf_atime;}
@@ -400,6 +401,177 @@ void blackhole_feed_loop(void)
 CPU_Step[CPU_BLACKHOLES] += measure_time(); /* collect timings and reset clock for next timing */
 }
 #include "../../system/code_block_xchange_finalize.h" /* de-define the relevant variables and macros to avoid compilation errors and memory leaks */
+
+
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+/* Compute continuous-wind ownership only after blackhole_feed_loop has finished
+   every accretion decision on every rank.  This pass is read-only on gas state,
+   so its denominator and the following injection pass see the same final set of
+   particles with SwallowID == 0. */
+#define CORE_FUNCTION_NAME blackhole_yuan18_wind_normalization_evaluate
+#define CONDITIONFUNCTION_FOR_EVALUATION if(bhsink_isactive(i))
+#include "../../system/code_block_xchange_initialize.h"
+
+struct INPUT_STRUCT_NAME
+{
+    int NodeList[NODELISTLENGTH];
+    MyDouble Pos[3];
+    MyFloat Hsml, Dt, Yuan18_J_dir[3], Yuan18_r_inject;
+    int Yuan18_mode_wind;
+}
+*DATAIN_NAME, *DATAGET_NAME;
+
+static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
+{
+    int k, target = P[i].IndexMapToTempStruc;
+    for(k=0;k<3;k++)
+    {
+        in->Pos[k] = P[i].Pos[k];
+        in->Yuan18_J_dir[k] = BlackholeTempInfo[target].Yuan18_J_dir[k];
+    }
+    in->Hsml = PPP[i].Hsml;
+    in->Dt = GET_PARTICLE_FEEDBACK_TIMESTEP_IN_PHYSICAL(i);
+#ifdef BH_INTERACT_ON_GAS_TIMESTEP
+    in->Dt = P[i].dt_since_last_gas_search;
+#endif
+    in->Yuan18_r_inject = BlackholeTempInfo[target].Yuan18_r_inject;
+    in->Yuan18_mode_wind = BlackholeTempInfo[target].Yuan18_mode_wind;
+}
+
+struct OUTPUT_STRUCT_NAME
+{
+    double Yuan18_wind_angle_weighted_kernel_sum;
+    double Yuan18_wind_angle_weighted_kernel_sum_pos;
+    double Yuan18_wind_angle_weighted_kernel_sum_neg;
+    double Yuan18_wind_surface_weight_sum[YUAN18_BONDI_FLUX_N_SAMPLES];
+}
+*DATARESULT_NAME, *DATAOUT_NAME;
+
+static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, int mode, int loop_iteration)
+{
+    int k, target = P[i].IndexMapToTempStruc;
+    if(mode == 0)
+    {
+        BlackholeTempInfo[target].Yuan18_wind_angle_weighted_kernel_sum = out->Yuan18_wind_angle_weighted_kernel_sum;
+        BlackholeTempInfo[target].Yuan18_wind_angle_weighted_kernel_sum_pos = out->Yuan18_wind_angle_weighted_kernel_sum_pos;
+        BlackholeTempInfo[target].Yuan18_wind_angle_weighted_kernel_sum_neg = out->Yuan18_wind_angle_weighted_kernel_sum_neg;
+        for(k=0;k<YUAN18_BONDI_FLUX_N_SAMPLES;k++)
+            {BlackholeTempInfo[target].Yuan18_wind_surface_weight_sum[k] = out->Yuan18_wind_surface_weight_sum[k];}
+    }
+    else
+    {
+        BlackholeTempInfo[target].Yuan18_wind_angle_weighted_kernel_sum += out->Yuan18_wind_angle_weighted_kernel_sum;
+        BlackholeTempInfo[target].Yuan18_wind_angle_weighted_kernel_sum_pos += out->Yuan18_wind_angle_weighted_kernel_sum_pos;
+        BlackholeTempInfo[target].Yuan18_wind_angle_weighted_kernel_sum_neg += out->Yuan18_wind_angle_weighted_kernel_sum_neg;
+        for(k=0;k<YUAN18_BONDI_FLUX_N_SAMPLES;k++)
+            {BlackholeTempInfo[target].Yuan18_wind_surface_weight_sum[k] += out->Yuan18_wind_surface_weight_sum[k];}
+    }
+}
+
+static inline void yuan18_add_wind_surface_denominator(struct OUTPUT_STRUCT_NAME *out, int j,
+                                                       double *bh_pos, double r_inject_code,
+                                                       double *axis, int mode_wind)
+{
+    int q, k;
+    if(!yuan18_continuous_wind_recipient_is_eligible(j) || P[j].SwallowID != 0) return;
+    for(q=0; q<YUAN18_BONDI_FLUX_N_SAMPLES; q++)
+    {
+        double dir[3], cos_theta=0, d_sample[3], r2_sample=0;
+        yuan18_wind_surface_direction(q, dir);
+        for(k=0; k<3; k++) {cos_theta += dir[k] * axis[k];}
+        double angular_weight = yuan18_wind_angular_weight(cos_theta, mode_wind);
+        if(angular_weight <= 0) {continue;}
+        for(k=0; k<3; k++)
+        {
+            double sample_pos_k = bh_pos[k] + r_inject_code * dir[k];
+            d_sample[k] = P[j].Pos[k] - sample_pos_k;
+        }
+        NEAREST_XYZ(d_sample[0], d_sample[1], d_sample[2], -1);
+        for(k=0; k<3; k++) {r2_sample += d_sample[k] * d_sample[k];}
+        if(r2_sample >= PPP[j].Hsml * PPP[j].Hsml) {continue;}
+        double ownership_weight = yuan18_wind_surface_assignment_weight(j, sqrt(r2_sample));
+        if(ownership_weight <= 0) {continue;}
+        out->Yuan18_wind_surface_weight_sum[q] += ownership_weight;
+        out->Yuan18_wind_angle_weighted_kernel_sum += angular_weight * ownership_weight;
+        if(cos_theta >= 0) {out->Yuan18_wind_angle_weighted_kernel_sum_pos += angular_weight * ownership_weight;}
+        else {out->Yuan18_wind_angle_weighted_kernel_sum_neg += angular_weight * ownership_weight;}
+    }
+}
+
+int blackhole_yuan18_wind_normalization_evaluate(int target, int mode, int *exportflag,
+                                                  int *exportnodecount, int *exportindex,
+                                                  int *ngblist, int loop_iteration)
+{
+    int startnode, numngb, listindex=0, j, k, n;
+    struct INPUT_STRUCT_NAME local;
+    struct OUTPUT_STRUCT_NAME out;
+    memset(&out, 0, sizeof(struct OUTPUT_STRUCT_NAME));
+    if(mode == 0) {INPUTFUNCTION_NAME(&local, target, loop_iteration);} else {local = DATAGET_NAME[target];}
+    if(local.Hsml <= 0 || local.Dt <= 0 || local.Yuan18_mode_wind <= 0)
+    {
+        if(mode == 0) {OUTPUTFUNCTION_NAME(&out,target,0,loop_iteration);} else {DATARESULT_NAME[target]=out;}
+        return 0;
+    }
+
+    double axis[3], norm=0;
+    for(k=0;k<3;k++) {axis[k]=local.Yuan18_J_dir[k]; norm+=axis[k]*axis[k];}
+    if(norm>0) {norm=1/sqrt(norm); for(k=0;k<3;k++) {axis[k]*=norm;}}
+    else {axis[0]=axis[1]=0; axis[2]=1;}
+    double r_inject_code = yuan18_wind_injection_radius_code(local.Yuan18_r_inject);
+    if(r_inject_code <= 0)
+    {
+        if(mode == 0) {OUTPUTFUNCTION_NAME(&out,target,0,loop_iteration);} else {DATARESULT_NAME[target]=out;}
+        return 0;
+    }
+    double shell_search_buffer = DMAX(local.Hsml, Extnodes[All.MaxPart].hmax);
+    double search_radius = DMAX(local.Hsml, r_inject_code + shell_search_buffer);
+
+    if(mode == 0) {startnode=All.MaxPart;} else {startnode=DATAGET_NAME[target].NodeList[0]; startnode=Nodes[startnode].u.d.nextnode;}
+    while(startnode >= 0)
+    {
+        while(startnode >= 0)
+        {
+            numngb = ngb_treefind_pairs_threads_targeted(local.Pos, search_radius, target, &startnode,
+                                                          mode, exportflag, exportnodecount,
+                                                          exportindex, ngblist, BH_NEIGHBOR_BITFLAG);
+            if(numngb < 0) {return -2;}
+            for(n=0;n<numngb;n++)
+            {
+                j=ngblist[n];
+                if(!yuan18_continuous_wind_recipient_is_eligible(j) || P[j].SwallowID != 0) {continue;}
+                double dpos[3], r2=0;
+                for(k=0;k<3;k++) {dpos[k]=P[j].Pos[k]-local.Pos[k];}
+                NEAREST_XYZ(dpos[0],dpos[1],dpos[2],-1);
+                for(k=0;k<3;k++) {r2+=dpos[k]*dpos[k];}
+                double r=sqrt(r2);
+                if(r < r_inject_code || fabs(r-r_inject_code) >= PPP[j].Hsml) {continue;}
+                yuan18_add_wind_surface_denominator(&out, j, local.Pos, r_inject_code,
+                                                     axis, local.Yuan18_mode_wind);
+            }
+        }
+        if(mode == 1)
+        {
+            listindex++;
+            if(listindex < NODELISTLENGTH)
+            {
+                startnode=DATAGET_NAME[target].NodeList[listindex];
+                if(startnode >= 0) {startnode=Nodes[startnode].u.d.nextnode;}
+            }
+        }
+    }
+    if(mode == 0) {OUTPUTFUNCTION_NAME(&out, target, 0, loop_iteration);} else {DATARESULT_NAME[target]=out;}
+    return 0;
+}
+
+void blackhole_yuan18_wind_normalization_loop(void)
+{
+#include "../../system/code_block_xchange_perform_ops_malloc.h"
+#include "../../system/code_block_xchange_perform_ops.h"
+#include "../../system/code_block_xchange_perform_ops_demalloc.h"
+    CPU_Step[CPU_BLACKHOLES] += measure_time();
+}
+#include "../../system/code_block_xchange_finalize.h"
+#endif
 
 
 #endif // top-level flag

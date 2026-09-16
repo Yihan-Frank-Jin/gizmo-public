@@ -383,7 +383,9 @@ void force_create_empty_nodes(int no, int topnode, int bits, int x, int y, int z
                     *nextfree = *nextfree + 1;
                     *nodecount = *nodecount + 1;
 
-                    if((*nodecount) >= MaxNodes || (*nodecount) >= MaxTopNodes)
+                    /* Creating the final allocated top-level node leaves nodecount equal to
+                       MaxTopNodes, which is valid because the last array index was MaxTopNodes-1. */
+                    if((*nodecount) >= MaxNodes || (*nodecount) > MaxTopNodes)
                     {
                         printf("task %d: maximum number MaxNodes=%d of tree-nodes reached."
                                "MaxTopNodes=%d NTopnodes=%d NTopleaves=%d nodecount=%d\n",
