@@ -493,6 +493,17 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 #endif
             break;
 
+        case IO_COMPTONRATE:
+#if defined(OUTPUT_COOLRATE_DETAIL) && defined(COOLING)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) SphP[pindex].ComptonHeatingCoolingRate;
+                    n++;
+                }
+#endif
+            break;
+
         case IO_HSML:		/* gas kernel length */
             for(n = 0; n < pc; pindex++)
                 if(P[pindex].Type == type)
@@ -1234,6 +1245,17 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                 if(P[pindex].Type == type)
                 {
                     *ip_int++ = BPP(pindex).Yuan18_BH_mode_wind;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_YUAN18_BH_LUMINOSITY:
+#if defined(BH_YUAN18_RADIATION) && defined(OUTPUT_YUAN18_BH_STATE)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) BPP(pindex).Yuan18_BH_L_rad;
                     n++;
                 }
 #endif
@@ -1993,6 +2015,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_NHRATE:
         case IO_HHRATE:
         case IO_MCRATE:
+        case IO_COMPTONRATE:
         case IO_HSML:
         case IO_SFR:
         case IO_AGE:
@@ -2022,6 +2045,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_YUAN18_BH_MASS_DISK:
         case IO_YUAN18_BH_MDOT_BONDI:
         case IO_YUAN18_BH_BONDI_RADIUS:
+        case IO_YUAN18_BH_LUMINOSITY:
         case IO_YUAN18_JET_RESERVOIR_MASS:
         case IO_R_PROTOSTAR:
         case IO_MASS_D_PROTOSTAR:
@@ -2321,6 +2345,7 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_NHRATE:
         case IO_HHRATE:
         case IO_MCRATE:
+        case IO_COMPTONRATE:
         case IO_HSML:
         case IO_SFR:
         case IO_AGE:
@@ -2355,6 +2380,7 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_YUAN18_BH_MDOT_BONDI:
         case IO_YUAN18_BH_BONDI_RADIUS:
         case IO_YUAN18_BH_MODE_WIND:
+        case IO_YUAN18_BH_LUMINOSITY:
         case IO_YUAN18_JET_RESERVOIR_MASS:
         case IO_R_PROTOSTAR:
         case IO_MASS_D_PROTOSTAR:
@@ -2611,6 +2637,7 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_NHRATE:
         case IO_HHRATE:
         case IO_MCRATE:
+        case IO_COMPTONRATE:
         case IO_DELAYTIME:
         case IO_SFR:
         case IO_DTENTR:
@@ -2736,6 +2763,7 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_YUAN18_BH_MDOT_BONDI:
         case IO_YUAN18_BH_BONDI_RADIUS:
         case IO_YUAN18_BH_MODE_WIND:
+        case IO_YUAN18_BH_LUMINOSITY:
         case IO_YUAN18_JET_RESERVOIR_MASS:
         case IO_R_PROTOSTAR:
         case IO_MASS_D_PROTOSTAR:
@@ -2996,6 +3024,7 @@ int blockpresent(enum iofields blocknr)
         case IO_NHRATE:
         case IO_HHRATE:
         case IO_MCRATE:
+        case IO_COMPTONRATE:
 #if defined(OUTPUT_COOLRATE_DETAIL) && defined(COOLING)
             return 1;
 #endif
@@ -3207,6 +3236,12 @@ int blockpresent(enum iofields blocknr)
         case IO_YUAN18_BH_BONDI_RADIUS:
         case IO_YUAN18_BH_MODE_WIND:
 #if defined(BH_YUAN18_ACCRETION) && defined(OUTPUT_YUAN18_BH_STATE)
+            return 1;
+#endif
+            break;
+
+        case IO_YUAN18_BH_LUMINOSITY:
+#if defined(BH_YUAN18_RADIATION) && defined(OUTPUT_YUAN18_BH_STATE)
             return 1;
 #endif
             break;
@@ -3510,6 +3545,9 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_MCRATE:
             strncpy(label, "MCRATE", 4);
             break;
+        case IO_COMPTONRATE:
+            strncpy(label, "COMPRATE", 4);
+            break;
         case IO_HSML:
             strncpy(label, "HSML", 4);
             break;
@@ -3698,6 +3736,9 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
             break;
         case IO_YUAN18_BH_MODE_WIND:
             strncpy(label, "Y18O", 4);
+            break;
+        case IO_YUAN18_BH_LUMINOSITY:
+            strncpy(label, "Y18L", 4);
             break;
         case IO_YUAN18_JET_RESERVOIR_MASS:
             strncpy(label, "Y18J", 4);
@@ -3980,6 +4021,9 @@ void get_dataset_name(enum iofields blocknr, char *buf)
         case IO_MCRATE:
             strcpy(buf, "MetalCoolingRate");
             break;
+        case IO_COMPTONRATE:
+            strcpy(buf, "ComptonHeatingCoolingRate");
+            break;
         case IO_DELAYTIME:
             strcpy(buf, "DelayTime");
             break;
@@ -4168,6 +4212,9 @@ void get_dataset_name(enum iofields blocknr, char *buf)
             break;
         case IO_YUAN18_BH_MODE_WIND:
             strcpy(buf, "BH_Yuan18_ModeWind");
+            break;
+        case IO_YUAN18_BH_LUMINOSITY:
+            strcpy(buf, "BH_Yuan18Luminosity");
             break;
         case IO_YUAN18_JET_RESERVOIR_MASS:
             strcpy(buf, "BH_Yuan18_JetReservoirMass");

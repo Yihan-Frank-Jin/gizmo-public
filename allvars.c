@@ -129,6 +129,9 @@ double rt_ion_G_HI[N_RT_FREQ_BINS];
 double rt_ion_G_HeI[N_RT_FREQ_BINS];
 double rt_ion_G_HeII[N_RT_FREQ_BINS];
 #endif
+#ifdef RT_ABSORBING_OUTFLOW_BOUNDARY
+double RT_EscapedEnergyPending[N_RT_FREQ_BINS];
+#endif
 
 
 
@@ -242,6 +245,9 @@ FILE
 #endif
 #endif
 *FdCPU;        /*!< file handle for cpu.txt log-file. */
+#ifdef RT_ABSORBING_OUTFLOW_BOUNDARY
+FILE *FdRTEscape;    /*!< compact radiation-escape log, retained in reduced-I/O runs */
+#endif
 
 #ifdef GALSF
 FILE *FdSfr;			/*!< file handle for sfr.txt log-file. */

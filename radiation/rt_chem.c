@@ -156,7 +156,7 @@ void rt_update_chemistry(void)
     c_light_codeunits = C_LIGHT_CODE;
     
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
-        if(P[i].Type == 0)
+        if(P[i].Type == 0 && P[i].Mass > 0 && SphP[i].Density > 0)
         {
             dtime = GET_PARTICLE_TIMESTEP_IN_PHYSICAL(i);
             rho = SphP[i].Density * All.cf_a3inv;
@@ -253,7 +253,7 @@ void rt_update_chemistry(void)
     c_light_codeunits = C_LIGHT_CODE;
     
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
-        if(P[i].Type == 0)
+        if(P[i].Type == 0 && P[i].Mass > 0 && SphP[i].Density > 0)
         {
             /* get the photo-ionization rates*/
             k_HI = 0.0;

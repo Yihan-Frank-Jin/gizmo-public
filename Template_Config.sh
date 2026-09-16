@@ -47,6 +47,7 @@
 #HYDRO_MESHLESS_FINITE_MASS     # solve hydro using the mesh-free Lagrangian (fixed-mass) finite-volume Godunov method
 #HYDRO_MESHLESS_FINITE_VOLUME   # solve hydro using the mesh-free (quasi-Lagrangian) finite-volume Godunov method (control mesh motion with HYDRO_FIX_MESH_MOTION)
 #HYDRO_REGULAR_GRID             # solve hydro equations on a regular (recti-linear) Cartesian mesh (grid) with a finite-volume Godunov method
+#HYDRO_MFM_EXACT_FALLBACK_FLUX_FIX # rebuild ideal-gas, non-magnetic MFM fluxes from the exact fallback contact state, including vacuum exits; exact fallback is unused with COOLING/GALSF
 ## -----------------------------------------------------------------------------------------------------
 # --------------------------------------- Options to explicitly control the mesh motion (for use with the MFV or grid solvers): only set for non-standard behavior
 #HYDRO_FIX_MESH_MOTION=0        # mesh with arbitrarily-defined mesh-generating velocities: (0=non-moving, 1=fixed-v [set in ICs] cartesian, 2=fixed-v [ICs] cylindrical, 3=fixed-v [ICs] spherical, 4=analytic function, 5=smoothed-Lagrangian, 6=glass-generating, 7=fully-Lagrangian)
@@ -306,7 +307,12 @@
 #BH_GRAVACCRETION_STELLARFBCORR # account for additional acceleration-dependent retention from stellar FB in Mdot. cite Hopkins et al., arXiv:2103.10444, for both the analytic derivation of these scalings and the numerical methods/implementation.
 #BH_BONDI=0                     # Bondi-Hoyle style accretion model: 0=default (with velocity); 1=dont use gas velocity with sound speed; 2=variable-alpha tweak (Booth & Schaye 2009; requires GALSF). cite Springel, Di Matteo, and Hernquist, 2005, MNRAS, 361, 776
 #BH_YUAN18_ACCRETION            # accretion model from Yuan et al. 2018, ApJ, 857, 121. cite Yuan et al. 2018, ApJ, 857, 121
+#BH_YUAN18_FIORE_COLD_WIND      # Provisional Fiore et al. 2017 UFO SUB speed: ~3.16e4 L45^(1/3.9) km/s, capped at 0.3c. Requires BLACK_HOLES and BH_YUAN18_ACCRETION.
+#                               # Uncertain pairing: Fig. 2 reference-line normalization at L45=1 + inverse Table 1 central slope; NOT the published best fit (intercept unavailable). Extrapolate over all SUB luminosities; retain Yuan18 mass flux, HOT/SUP prescriptions, thermal energy, and angular distribution. Off restores the Gofford/Yuan18 speed.
+#BH_YUAN18_RADIATION            # feed the Yuan18 bolometric AGN luminosity into native GIZMO radiation transport, independently of GALSF. Requires BH_YUAN18_ACCRETION, a native RT solver, RT_SOURCES including type 5, and at least one supported AGN radiation band.
 #BH_YUAN18_JET_SPAWN=4           # spawn-based Yuan18/MACER hot-mode jet injection (requires BH_YUAN18_ACCRETION). value is the even minimum total number of target-mass particles in a paired launch; HOT jet mass accumulates until this threshold is reached, then native BH_WIND_SPAWN-style capped batches are emitted.
+#                               # partitions mdot_jet=0.35*final_mdot_bh, conserves BH+wind+jet mass, and tests HOT after jet loss. The old hot bridge is extrapolated only to its first upward crossing of final_mdot_bh=0.02*mdot_edd; larger inflow selects cold.
+#BH_YUAN18_JET_SPAWN_EVERY_TIMESTEP # optional historical cadence: on each active HOT BH step with positive jet supply, divide all pending mass among 2*BH_YUAN18_JET_SPAWN cells (half per lobe), independent of BAL_wind_particle_mass. Deferred mass remains in the persistent reservoir. Without this flag the target-mass threshold rule is unchanged.
 #BH_YUAN18_WIND_SPAWN=2          # spawn-based Yuan18/MACER wind injection (requires BH_YUAN18_ACCRETION). value is the minimum number of wind particles spawned per reservoir event; launches HOT/SUB/SUP winds from the weighted Bondi-radius surface using Yuan18 angular weights.
 #BH_YUAN18_WIND_CONTINUOUS      # continuous Yuan18/MACER wind injection on the weighted Bondi-radius surface (requires BH_YUAN18_ACCRETION). couples Yuan18 mdot_wind/v_wind/eps_wind to gas kernels intersecting the injection surface, using HOT/SUB/SUP angular weights.
 #BH_YUAN18_WIND_FIXED_Z_AXIS    # debug option for BH_YUAN18_JET_SPAWN, BH_YUAN18_WIND_SPAWN, or BH_YUAN18_WIND_CONTINUOUS: force the Yuan18 angular-distribution axis to the simulation z-axis instead of BH_Specific_AngMom/Jgas, useful for validating cos^2(theta) sampling
@@ -419,6 +425,7 @@
 #RT_USE_GRAVTREE_SAVE_RAD_FLUX          # save radiative fluxes incident on each cell if using RHD methods that propagate fluxes through the gravity tree when these wouldn't be saved by default
 #RT_REPROCESS_INJECTED_PHOTONS          # re-process photon energy while doing the discrete injection operation conserving photon energy, put only the un-absorbed component of the current band into that band, putting the rest in its "donation" bin (ionizing->optical, all others->IR). This would happen anyway during the routine for resolved absorption, but this may more realistically handle situations where e.g. your dust destruction front is at totally unresolved scales and you don't want to spuriously ionize stuff on larger scales. Assume isotropic re-radiation, so inject only energy for the donated bin and not net flux/momentum. follows STARFORGE methods (Grudic+ arXiv:2010.11254) - cite this
 #RT_BH_ANGLEWEIGHT_PHOTON_INJECTION     # uses a solid-angle as opposed to simple kernel weight (requires extra passes) for depositing radiation from sinks/BHs when the direct deposition is used. also ensures the sink uses a 2-way search to ensure overlapping diffuse gas gets radiation. cite Grudic+ arXiv:2010.11254
+#RT_ABSORBING_OUTFLOW_BOUNDARY=1        # M1-only open-radiation sponge for finite non-periodic boxes with BOX_OUTFLOW_* faces. value is the sponge width in local gas smoothing lengths. radiation reaching the sponge escapes without coupling to gas; writes radiation_escape.txt and restart-persistent escaped-energy counters.
 #RT_ISRF_BACKGROUND=1                   # include Draine 1978 ISRF for photoelectric heating (appropriate for solar circle, must be re-scaled for different environments); rescaled by a constant normalization given by this constant, if defined
 ####################################################################################################
 
@@ -476,7 +483,7 @@
 #OUTPUT_BFIELD_DIVCLEAN_INFO    # outputs the phi, phi-gradient, and numerical div-B fields used for de-bugging MHD simulations
 #OUTPUT_TIMESTEP                # outputs timesteps for each particle
 #OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS # default-off, per-rank diagnostic trace of raw timestep criteria, assignment/rounding, wakeups, spawn initialization, and next-kick candidates; records only and must not alter physical evolution
-#OUTPUT_YUAN18_BH_STATE         # output the persistent Yuan18 BH accretion/feedback state (fall/disk masses, Bondi inflow rate/radius, current wind mode, and enabled spawn reservoirs) for PartType5 and restore it on snapshot restart; requires BH_YUAN18_ACCRETION
+#OUTPUT_YUAN18_BH_STATE         # output the persistent Yuan18 BH accretion/feedback state (fall/disk masses, Bondi inflow rate/radius, current wind mode, enabled spawn reservoirs, and luminosity when BH_YUAN18_RADIATION is on) for PartType5 and restore it on snapshot restart; requires BH_YUAN18_ACCRETION
 #OUTPUT_SOFTENING               # outputs force softening for each particle
 #OUTPUT_COOLRATE                # outputs cooling rate, and conduction rate if enabled
 #OUTPUT_COOLRATE_DETAIL         # outputs cooling rate term by term [saves all individually to snapshot]
@@ -506,6 +513,7 @@
 #IO_MOLECFRAC_NOT_IN_ICFILE     # special flag needed if using certain molecular modules with restart flag=2 where molecular data was not in that snapshot, to tell code not to read it
 #NO_YUAN18_BH_STATE_IN_ICS      # compatibility flag for restartflag=2 from an older snapshot that lacks the OUTPUT_YUAN18_BH_STATE datasets; the missing state cannot be restored, but subsequent snapshots can write it
 #NO_YUAN18_BH_MODE_IN_ICS       # compatibility flag for restartflag=2 from a snapshot with the four older Yuan18 BH state fields but no BH_Yuan18_ModeWind; initializes the missing mode to NONE until the next BH evaluation
+#NO_YUAN18_BH_LUMINOSITY_IN_ICS # compatibility flag for restartflag=2 from a Yuan18-state snapshot that lacks BH_Yuan18Luminosity; reconstructs it from BH_Mdot and BH_Mass
 #NO_YUAN18_JET_RESERVOIR_IN_ICS # compatibility flag for restartflag=2 from a Yuan18-state snapshot that lacks BH_Yuan18_JetReservoirMass; initializes the missing jet reservoir to zero
 #IO_REDUNDANT_BACKUP_RESTARTFILE_FREQUENCY=3  # keep an extra set of backup files that are IO_REDUNDANT_BACKUP_RESTARTFILE_FREQUENCY number of restarts old (allows for soft restarts from an older position)
 #IO_GRADUAL_SNAPSHOT_RESTART    # when restarting from a snapshot (flag=2) start every element on the shortest possible timestep - can reduce certain transient behaviors from the restart procedure

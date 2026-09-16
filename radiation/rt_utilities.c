@@ -72,10 +72,13 @@ int rt_get_source_luminosity(int i, int mode, double *lum)
     active_check += rt_get_lum_band_singlestar(i,mode,lum); // get luminosities for individual star/sink particles assuming they are protostars or stars
 #else
     active_check += rt_get_lum_band_stellarpopulation(i,mode,lum); // get luminosities for star particles assuming they represent IMF-averaged populations
-#if defined(BLACK_HOLES)
+#if defined(BLACK_HOLES) && !defined(BH_YUAN18_RADIATION)
     active_check += rt_get_lum_band_agn(i,mode,lum); // get luminosities for BH/sink particles assuming they represent AGN
 #endif
 #endif
+#endif
+#if defined(BH_YUAN18_RADIATION)
+    active_check += rt_get_lum_band_agn(i,mode,lum); // Yuan18 AGN sources are independent of GALSF
 #endif
     if(mode < 0 && active_check) {return 1;} // if got a positive answer already, that's all we are checking here, we are done
 
@@ -378,7 +381,12 @@ int rt_get_lum_band_agn(int i, int mode, double *lum)
     if(P[i].Type != 5) {return 0;} // only go forward for BH-type particles
     int active_check = 0; // default to inactive //
 #if defined(BLACK_HOLES)
-    double l_bol = bh_lum_bol(P[i].BH_Mdot,P[i].Mass,i); if(l_bol <= 0) {return 0;} // no accretion luminosity -- no point in going further!
+#ifdef BH_YUAN18_RADIATION
+    double l_bol = BPP(i).Yuan18_BH_L_rad;
+#else
+    double l_bol = bh_lum_bol(P[i].BH_Mdot,P[i].Mass,i);
+#endif
+    if(!isfinite(l_bol) || l_bol <= 0) {return 0;} // no valid accretion luminosity -- no point in going further!
     // corrections below follow  Shen, PFH, et al. 2020 to account for alpha-ox and template spectrum to get AGN set in different bands as a function of bolometric luminosity. functional form very similar to Hopkins, Richards, & Hernquist 2007, but updated values. //
     double lbol_lsun = l_bol * UNIT_LUM_IN_SOLAR, R_opt_xr; // luminosity in physical code units //
     double f_xr_0=0.0461795, R_xr_opt = pow(lbol_lsun/1.e10,0.026) / (0.0455713 + 0.140974*pow(lbol_lsun/1.e10,0.304)), Rfxr=R_xr_opt*f_xr_0; // x-ray to optical ratio normalized to its value at Lbol=1e13 solar
@@ -665,6 +673,100 @@ double return_flux_limiter(int target, int k_freq)
 
 
 
+#ifdef RT_ABSORBING_OUTFLOW_BOUNDARY
+static int rt_absorbing_outflow_face_is_enabled(int axis, int upper_face)
+{
+    int boundary_flag = special_boundary_condition_xyz_def_outflow[axis];
+    if(boundary_flag == BOX_VALUE_FOR_NOTHING_SPECIAL_BOUNDARY_) {return 0;}
+    if(boundary_flag == 0) {return 1;}
+    if(upper_face) {return boundary_flag == 1;}
+    return boundary_flag == -1;
+}
+
+int rt_absorbing_outflow_boundary_cell_is_active(int i)
+{
+    if(P[i].Type != 0 || P[i].Mass <= 0 || PPP[i].Hsml <= 0) {return 0;}
+    double edge_width = ((double)RT_ABSORBING_OUTFLOW_BOUNDARY) * PPP[i].Hsml;
+    double box_size[3] = {boxSize_X, boxSize_Y, boxSize_Z};
+    int axis;
+    for(axis=0; axis<3; axis++)
+    {
+        if(rt_absorbing_outflow_face_is_enabled(axis,0) && P[i].Pos[axis] <= edge_width) {return 1;}
+        if(rt_absorbing_outflow_face_is_enabled(axis,1) && box_size[axis] - P[i].Pos[axis] <= edge_width) {return 1;}
+    }
+    return 0;
+}
+
+static void rt_apply_absorbing_outflow_boundary(int i, double dt_entr, int mode)
+{
+    int kf, k_dir;
+    for(kf=0; kf<N_RT_FREQ_BINS; kf++)
+    {
+        if(mode == 0)
+        {
+            double escaped_energy = DMAX((double)SphP[i].Rad_E_gamma[kf] - MIN_REAL_NUMBER, 0.0);
+            double incoming_rate = SphP[i].Rad_Je[kf] + SphP[i].Dt_Rad_E_gamma[kf];
+            if(dt_entr > 0 && incoming_rate > 0) {escaped_energy += incoming_rate * dt_entr;}
+            if(escaped_energy > 0)
+            {
+#pragma omp atomic
+                RT_EscapedEnergyPending[kf] += escaped_energy;
+            }
+            SphP[i].Rad_E_gamma[kf] = MIN_REAL_NUMBER;
+            SphP[i].Rad_E_gamma_Pred[kf] = MIN_REAL_NUMBER;
+            for(k_dir=0; k_dir<3; k_dir++)
+            {
+                SphP[i].Rad_Flux[kf][k_dir] = 0;
+                SphP[i].Rad_Flux_Pred[kf][k_dir] = 0;
+            }
+        }
+        else
+        {
+            SphP[i].Rad_E_gamma_Pred[kf] = MIN_REAL_NUMBER;
+            for(k_dir=0; k_dir<3; k_dir++) {SphP[i].Rad_Flux_Pred[kf][k_dir] = 0;}
+        }
+    }
+}
+
+void rt_absorbing_outflow_boundary_flush_escaped_energy(void)
+{
+    double escaped_global[N_RT_FREQ_BINS];
+    int kf;
+    MPI_Allreduce(RT_EscapedEnergyPending, escaped_global, N_RT_FREQ_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    for(kf=0; kf<N_RT_FREQ_BINS; kf++)
+    {
+        All.RT_EscapedEnergy[kf] += escaped_global[kf];
+        RT_EscapedEnergyPending[kf] = 0;
+    }
+}
+
+void rt_absorbing_outflow_boundary_write_statistics(void)
+{
+    double radiation_local[N_RT_FREQ_BINS], radiation_global[N_RT_FREQ_BINS];
+    long long boundary_cells_local = 0, boundary_cells_global = 0;
+    int i, kf;
+    for(kf=0; kf<N_RT_FREQ_BINS; kf++) {radiation_local[kf] = 0;}
+    for(i=0; i<N_gas; i++)
+    {
+        if(P[i].Mass <= 0) {continue;}
+        if(rt_absorbing_outflow_boundary_cell_is_active(i)) {boundary_cells_local++;}
+        for(kf=0; kf<N_RT_FREQ_BINS; kf++) {radiation_local[kf] += DMAX((double)SphP[i].Rad_E_gamma[kf],0.0);}
+    }
+    rt_absorbing_outflow_boundary_flush_escaped_energy();
+    MPI_Reduce(radiation_local, radiation_global, N_RT_FREQ_BINS, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&boundary_cells_local, &boundary_cells_global, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    if(ThisTask == 0)
+    {
+        fprintf(FdRTEscape, "%.16g %lld", All.Time, boundary_cells_global);
+        for(kf=0; kf<N_RT_FREQ_BINS; kf++) {fprintf(FdRTEscape, " %.16g", radiation_global[kf]);}
+        for(kf=0; kf<N_RT_FREQ_BINS; kf++) {fprintf(FdRTEscape, " %.16g", All.RT_EscapedEnergy[kf]);}
+        fprintf(FdRTEscape, "\n");
+        fflush(FdRTEscape);
+    }
+}
+#endif
+
+
 /***********************************************************************************************************/
 /*
   routine which does the drift/kick operations on radiation quantities. separated here because we use a non-trivial
@@ -677,6 +779,13 @@ double return_flux_limiter(int target, int k_freq)
 void rt_update_driftkick(int i, double dt_entr, int mode)
 {
 #if defined(RT_EVOLVE_ENERGY) || defined(RT_EVOLVE_INTENSITIES)
+#ifdef RT_ABSORBING_OUTFLOW_BOUNDARY
+    if(rt_absorbing_outflow_boundary_cell_is_active(i))
+    {
+        rt_apply_absorbing_outflow_boundary(i,dt_entr,mode);
+        return;
+    }
+#endif
     int kf, k_tmp; double total_erad_emission_minus_absorption = 0;
 #if defined(RT_EVOLVE_INTENSITIES)
     for(kf=0;kf<N_RT_FREQ_BINS;kf++) {SphP[i].Rad_E_gamma[kf]=0; for(k_tmp=0;k_tmp<N_RT_INTENSITY_BINS;k_tmp++) {SphP[i].Rad_E_gamma[kf]+=RT_INTENSITY_BINS_DOMEGA*SphP[i].Rad_Intensity[kf][k_tmp];}}
@@ -1041,6 +1150,16 @@ double background_isrf_cmb_Teff(){
 void rt_set_simple_inits(int RestartFlag)
 {
     if(RestartFlag==1) return;
+#ifdef RT_ABSORBING_OUTFLOW_BOUNDARY
+    {
+        int k;
+        for(k=0; k<N_RT_FREQ_BINS; k++)
+        {
+            All.RT_EscapedEnergy[k] = 0;
+            RT_EscapedEnergyPending[k] = 0;
+        }
+    }
+#endif
     int flag_to_reset_values_on_startup = 0;
     if(RestartFlag==0) {flag_to_reset_values_on_startup = 1;}
 #if defined(SINGLE_STAR_AND_SSP_HYBRID_MODEL) && defined(SINGLE_STAR_RESTART_FROM_FIRESIM)

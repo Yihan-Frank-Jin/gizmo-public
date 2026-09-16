@@ -615,6 +615,21 @@ void open_outputfiles(void)
 #if !defined(IO_REDUCED_MODE) || defined(BH_OUTPUT_MOREINFO)
   sprintf(buf, "%sblackhole_details/blackhole_details_%d.txt", All.OutputDir, ThisTask);
   if(!(FdBlackHolesDetails = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
+#if defined(BH_OUTPUT_MOREINFO) && defined(BH_YUAN18_ACCRETION) && (defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_WIND_SPAWN) || defined(BH_YUAN18_JET_SPAWN))
+  if(RestartFlag == 0)
+    {
+      fprintf(FdBlackHolesDetails,
+              "# Time ID P_Mass BH_Mass mass_disk BH_Mdot mdot_disk dt Dens u_int Sfr "
+              "Mgas Mstar MgasBulge MstarBulge r0 PosX PosY PosZ VelX VelY VelZ "
+              "JgasX JgasY JgasZ JstarX JstarY JstarZ Bondi_R_Weighted Yuan18_BH_Mdot_Bondi "
+              "reservoir_mass reservoir_v_outflow reservoir_eps_outflow reservoir_mode "
+              "reservoir_Jx reservoir_Jy reservoir_Jz current_v_outflow current_eps_outflow "
+              "current_r_inject current_mode target_outflow_mass n_reservoir_units "
+              "Yuan18_mdot_wind Yuan18_v_wind Yuan18_eps_wind Yuan18_mdot_jet "
+              "Yuan18_v_jet Yuan18_eps_jet Yuan18_L_rad\n");
+      fflush(FdBlackHolesDetails);
+    }
+#endif
 #endif
 #ifdef OUTPUT_SINK_ACCRETION_HIST
   sprintf(buf, "%sblackhole_details/bhswallow_%d.txt", All.OutputDir, ThisTask);
@@ -638,6 +653,20 @@ void open_outputfiles(void)
 
     sprintf(buf, "%s%s", All.OutputDir, "cpu.txt");
     if(!(FdCPU = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
+
+#ifdef RT_ABSORBING_OUTFLOW_BOUNDARY
+    sprintf(buf, "%s%s", All.OutputDir, "radiation_escape.txt");
+    if(!(FdRTEscape = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
+    if(RestartFlag == 0)
+    {
+      int k_rt;
+      fprintf(FdRTEscape, "# Time BoundaryCellCount");
+      for(k_rt=0; k_rt<N_RT_FREQ_BINS; k_rt++) {fprintf(FdRTEscape, " RadiationEnergy_%d", k_rt);}
+      for(k_rt=0; k_rt<N_RT_FREQ_BINS; k_rt++) {fprintf(FdRTEscape, " EscapedEnergy_%d", k_rt);}
+      fprintf(FdRTEscape, "\n");
+      fflush(FdRTEscape);
+    }
+#endif
 
 #ifndef IO_REDUCED_MODE
     sprintf(buf, "%s%s", All.OutputDir, "timebin.txt");
@@ -901,7 +930,7 @@ void read_parameter_file(char *fname)
       addr[nt] = &All.CpuTimeBetRestartFile;
       id[nt++] = REAL;
 
-#ifdef DEVELOPER_MODE
+#if defined(DEVELOPER_MODE) || defined(RT_ABSORBING_OUTFLOW_BOUNDARY)
       strcpy(tag[nt], "TimeBetStatistics");
       strcpy(alternate_tag[nt], "Time_Between_Internal_Diagnostic_Statistics");
       addr[nt] = &All.TimeBetStatistics;
@@ -2378,7 +2407,9 @@ void read_parameter_file(char *fname)
     All.ErrTolTheta = 0.7;
     All.ErrTolForceAcc = 0.0025;
     All.MaxRMSDisplacementFac = 0.25;
+#ifndef RT_ABSORBING_OUTFLOW_BOUNDARY
     All.TimeBetStatistics = 1.0e10;
+#endif
     strcpy(All.ResubmitCommand,"none");
     All.ResubmitOn = 0;
 #ifdef HYDRO_SPH

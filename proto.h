@@ -905,6 +905,11 @@ double rt_absorption_rate(int i, int k_freq);
 double rt_diffusion_coefficient(int i, int k_freq);
 void rt_eddington_update_calculation(int j);
 void rt_update_driftkick(int i, double dt_entr, int mode);
+#ifdef RT_ABSORBING_OUTFLOW_BOUNDARY
+int rt_absorbing_outflow_boundary_cell_is_active(int i);
+void rt_absorbing_outflow_boundary_flush_escaped_energy(void);
+void rt_absorbing_outflow_boundary_write_statistics(void);
+#endif
 #endif
 #ifdef RT_SOURCE_INJECTION
 void rt_source_injection(void);

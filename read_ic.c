@@ -418,6 +418,12 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
 #endif
             break;
 
+        case IO_YUAN18_BH_LUMINOSITY:
+#if defined(BH_YUAN18_RADIATION) && defined(OUTPUT_YUAN18_BH_STATE)
+            for(n = 0; n < pc; n++) {P[offset + n].Yuan18_BH_L_rad = *fp++;}
+#endif
+            break;
+
         case IO_YUAN18_JET_RESERVOIR_MASS:
 #if defined(BH_YUAN18_JET_SPAWN) && defined(OUTPUT_YUAN18_BH_STATE)
             for(n = 0; n < pc; n++) {P[offset + n].Yuan18_BH_unspawned_jet_mass = *fp++;}
@@ -698,6 +704,7 @@ void empty_read_buffer(enum iofields blocknr, int offset, int pc, int type)
         case IO_NHRATE:
         case IO_HHRATE:
         case IO_MCRATE:
+        case IO_COMPTONRATE:
         case IO_TSTP:
         case IO_IMF:
         case IO_DIVB:
@@ -1087,11 +1094,16 @@ void read_file(char *fname, int readTask, int lastTask)
             if(RestartFlag == 2 &&
                (blocknr == IO_YUAN18_BH_MASS_FALL || blocknr == IO_YUAN18_BH_MASS_DISK ||
                 blocknr == IO_YUAN18_BH_MDOT_BONDI || blocknr == IO_YUAN18_BH_BONDI_RADIUS ||
-                blocknr == IO_YUAN18_BH_MODE_WIND || blocknr == IO_YUAN18_JET_RESERVOIR_MASS)) {continue;}
+                blocknr == IO_YUAN18_BH_MODE_WIND || blocknr == IO_YUAN18_BH_LUMINOSITY ||
+                blocknr == IO_YUAN18_JET_RESERVOIR_MASS)) {continue;}
 #endif
 
 #ifdef NO_YUAN18_BH_MODE_IN_ICS
             if(RestartFlag == 2 && blocknr == IO_YUAN18_BH_MODE_WIND) {continue;}
+#endif
+
+#ifdef NO_YUAN18_BH_LUMINOSITY_IN_ICS
+            if(RestartFlag == 2 && blocknr == IO_YUAN18_BH_LUMINOSITY) {continue;}
 #endif
 
 #ifdef NO_YUAN18_JET_RESERVOIR_IN_ICS

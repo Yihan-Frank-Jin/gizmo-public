@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <float.h>
 #include "../../allvars.h"
 #include "../../proto.h"
 #include "../../kernel.h"
@@ -132,10 +133,42 @@ static inline void INPUTFUNCTION_NAME(struct INPUT_STRUCT_NAME *in, int i, int l
 }
 
 #if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+static inline double yuan18_complete_pair_angular_norm(MyFloat *surface_weight_sum, double *axis,
+                                                        int mode_wind, int *n_positive_covered,
+                                                        int *n_negative_covered, int *n_complete_pairs)
+{
+    int q, k, n_pairs = YUAN18_BONDI_FLUX_N_SAMPLES / 2;
+    double pair_angular_norm = 0;
+    if(n_positive_covered != NULL) {*n_positive_covered = 0;}
+    if(n_negative_covered != NULL) {*n_negative_covered = 0;}
+    if(n_complete_pairs != NULL) {*n_complete_pairs = 0;}
+
+    for(q=0; q<n_pairs; q++)
+    {
+        double dir[3], cos_theta=0;
+        yuan18_wind_surface_direction(q, dir);
+        for(k=0; k<3; k++) {cos_theta += dir[k] * axis[k];}
+        double angular_weight = yuan18_wind_angular_weight(cos_theta, mode_wind);
+        if(angular_weight <= 0) {continue;}
+
+        int partner = q + n_pairs;
+        int positive_has_coverage = (surface_weight_sum[q] > 0);
+        int negative_has_coverage = (surface_weight_sum[partner] > 0);
+        if(positive_has_coverage && n_positive_covered != NULL) {(*n_positive_covered)++;}
+        if(negative_has_coverage && n_negative_covered != NULL) {(*n_negative_covered)++;}
+        if(!positive_has_coverage || !negative_has_coverage) {continue;}
+
+        pair_angular_norm += angular_weight;
+        if(n_complete_pairs != NULL) {(*n_complete_pairs)++;}
+    }
+    return pair_angular_norm;
+}
+
+
 static inline void yuan18_compute_wind_surface_projection_to_gas(int j, double *bh_pos, double r_center,
                                                                  double r_inject_code, double *axis, int mode_wind,
                                                                  MyFloat *surface_weight_sum,
-                                                                 double angular_norm, double angular_norm_pos, double angular_norm_neg,
+                                                                 double pair_angular_norm,
                                                                  double *mass_weight, double *dir_weight)
 {
     int q, k;
@@ -146,14 +179,16 @@ static inline void yuan18_compute_wind_surface_projection_to_gas(int j, double *
     if((mode_wind != 4) && !yuan18_continuous_wind_recipient_is_eligible(j)) return;
 #endif
     if((P[j].Type != 0) || (P[j].Mass <= 0) || (SphP[j].Density <= 0) || (PPP[j].Hsml <= 0)) return;
-    if((r_inject_code <= 0) || (mode_wind <= 0) || (angular_norm <= 0) || (r_center < r_inject_code)) return;
+    if((r_inject_code <= 0) || (mode_wind <= 0) || (pair_angular_norm <= 0) || (r_center < r_inject_code)) return;
     if(fabs(r_center - r_inject_code) >= PPP[j].Hsml) return;
 
-    int use_side_norm = (angular_norm_pos > 0 && angular_norm_neg > 0);
+    int n_pairs = YUAN18_BONDI_FLUX_N_SAMPLES / 2;
     for(q=0; q<YUAN18_BONDI_FLUX_N_SAMPLES; q++)
     {
         double denom_q = surface_weight_sum[q];
         if(denom_q <= 0) {continue;}
+        int partner = (q < n_pairs) ? q + n_pairs : q - n_pairs;
+        if(surface_weight_sum[partner] <= 0) {continue;}
 
         double dir[3], cos_theta=0, d_sample[3], r2_sample=0;
         yuan18_wind_surface_direction(q, dir);
@@ -173,12 +208,7 @@ static inline void yuan18_compute_wind_surface_projection_to_gas(int j, double *
         double ownership_weight = yuan18_wind_surface_assignment_weight(j, sqrt(r2_sample));
         if(ownership_weight <= 0) {continue;}
 
-        double sample_norm = angular_weight / angular_norm;
-        if(use_side_norm)
-        {
-            double side_norm = (cos_theta >= 0) ? angular_norm_pos : angular_norm_neg;
-            sample_norm = 0.5 * angular_weight / side_norm;
-        }
+        double sample_norm = 0.5 * angular_weight / pair_angular_norm;
         double wt = sample_norm * ownership_weight / denom_q;
         if(wt <= 0) {continue;}
 
@@ -203,11 +233,13 @@ static inline void yuan18_add_continuous_outflow_to_gas(double m_outflow, double
     for(k=0; k<3; k++)
     {
         Vel_j_before[k] = Vel_j[k];
-        outflow_momentum_code[k] = m_outflow * bh_vel[k] + mdotdt_outflow * All.cf_atime * v_outflow * dir_weight[k];
-        v_bh_phys[k] = bh_vel[k] / All.cf_atime;
+        outflow_momentum_code[k] = m_outflow * bh_vel[k] +
+            mdotdt_outflow * yuan18_code_velocity_from_physical(v_outflow) * dir_weight[k];
+        v_bh_phys[k] = yuan18_physical_velocity_from_code(bh_vel[k]);
         v_bh2_phys += v_bh_phys[k] * v_bh_phys[k];
         v_bh_dot_dir_wt += v_bh_phys[k] * dir_weight[k];
-        e_total += 0.5 * Mass_j_before * (Vel_j_before[k] / All.cf_atime) * (Vel_j_before[k] / All.cf_atime);
+        double v_j_before_phys = yuan18_physical_velocity_from_code(Vel_j_before[k]);
+        e_total += 0.5 * Mass_j_before * v_j_before_phys * v_j_before_phys;
     }
     e_total += 0.5 * mdotdt_outflow * (mass_weight * v_bh2_phys + 2.0 * v_outflow * v_bh_dot_dir_wt + mass_weight * v_outflow * v_outflow);
     e_total += m_outflow * eps_outflow;
@@ -215,7 +247,11 @@ static inline void yuan18_add_continuous_outflow_to_gas(double m_outflow, double
     *Mass_j += m_outflow;
     for(k=0; k<3; k++) {Vel_j[k] = (Mass_j_before * Vel_j_before[k] + outflow_momentum_code[k]) / (*Mass_j);}
     double e_kin_new = 0;
-    for(k=0; k<3; k++) {e_kin_new += 0.5 * (Vel_j[k] / All.cf_atime) * (Vel_j[k] / All.cf_atime);}
+    for(k=0; k<3; k++)
+    {
+        double v_j_phys = yuan18_physical_velocity_from_code(Vel_j[k]);
+        e_kin_new += 0.5 * v_j_phys * v_j_phys;
+    }
     *InternalEnergy_j = e_total / (*Mass_j) - e_kin_new;
     if(*InternalEnergy_j < 0) {*InternalEnergy_j = 0;}
 }
@@ -230,6 +266,10 @@ struct OUTPUT_STRUCT_NAME
     MyDouble accreted_BH_Mass_alphadisk;
 #ifdef BH_YUAN18_JET_SPAWN
     MyDouble accreted_Yuan18_jet_reservoir_mass;
+#endif
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+    MyDouble Yuan18_wind_mass_coupled;
+    MyDouble Yuan18_wind_intrinsic_momentum_code[3];
 #endif
 #if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
     MyDouble BH_AccretionDeficit;
@@ -273,6 +313,15 @@ static inline void OUTPUTFUNCTION_NAME(struct OUTPUT_STRUCT_NAME *out, int i, in
 #ifdef BH_YUAN18_JET_SPAWN
     ASSIGN_ADD_PRESET(BlackholeTempInfo[target].accreted_Yuan18_jet_reservoir_mass,
                       out->accreted_Yuan18_jet_reservoir_mass, mode);
+#endif
+#ifdef BH_YUAN18_WIND_CONTINUOUS
+    ASSIGN_ADD_PRESET(BlackholeTempInfo[target].Yuan18_wind_mass_coupled,
+                      out->Yuan18_wind_mass_coupled, mode);
+    for(k=0;k<3;k++)
+    {
+        ASSIGN_ADD_PRESET(BlackholeTempInfo[target].Yuan18_wind_intrinsic_momentum_code[k],
+                          out->Yuan18_wind_intrinsic_momentum_code[k], mode);
+    }
 #endif
 #if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
     ASSIGN_ADD_PRESET(BlackholeTempInfo[target].BH_AccretionDeficit, out->BH_AccretionDeficit, mode);
@@ -333,34 +382,34 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
     double yuan18_r_inject_code = yuan18_wind_injection_radius_code(local.Yuan18_r_inject);
 #endif
 #ifdef BH_YUAN18_WIND_CONTINUOUS
-    double yuan18_surface_angular_norm=0, yuan18_surface_angular_norm_pos=0, yuan18_surface_angular_norm_neg=0;
-    for(k=0; k<YUAN18_BONDI_FLUX_N_SAMPLES; k++)
+    int yuan18_positive_covered=0, yuan18_negative_covered=0, yuan18_complete_pairs=0;
+    double yuan18_surface_pair_angular_norm =
+        yuan18_complete_pair_angular_norm(local.Yuan18_wind_surface_weight_sum, Yuan18_J_dir,
+                                           local.Yuan18_mode_wind, &yuan18_positive_covered,
+                                           &yuan18_negative_covered, &yuan18_complete_pairs);
+    int yuan18_continuous_wind_requested = (local.Yuan18_mdot_wind > 0);
+    if(mode == 0 && yuan18_continuous_wind_requested &&
+       (local.Yuan18_v_wind <= 0 || local.Yuan18_mode_wind <= 0 || yuan18_r_inject_code <= 0 ||
+        yuan18_surface_pair_angular_norm <= 0 || yuan18_complete_pairs <= 0))
     {
-        if(local.Yuan18_wind_surface_weight_sum[k] <= 0) {continue;}
-        double dir_q[3], cos_theta_q=0;
-        yuan18_wind_surface_direction(k, dir_q);
-        int kk; for(kk=0; kk<3; kk++) {cos_theta_q += dir_q[kk] * Yuan18_J_dir[kk];}
-        double angular_weight_q = yuan18_wind_angular_weight(cos_theta_q, local.Yuan18_mode_wind);
-        if(angular_weight_q <= 0) {continue;}
-        yuan18_surface_angular_norm += angular_weight_q;
-        if(cos_theta_q >= 0) {yuan18_surface_angular_norm_pos += angular_weight_q;} else {yuan18_surface_angular_norm_neg += angular_weight_q;}
+        printf("Yuan18 continuous-wind antipodal coverage failure: Task=%d Time=%g BH=%llu mode=%d mdot_wind=%g v_wind=%g r_inject_physical=%g r_inject_code=%g positive_covered=%d negative_covered=%d complete_pairs=%d pair_norm=%g\n",
+               ThisTask, All.Time, (unsigned long long)local.ID, local.Yuan18_mode_wind,
+               local.Yuan18_mdot_wind, local.Yuan18_v_wind, local.Yuan18_r_inject,
+               yuan18_r_inject_code, yuan18_positive_covered, yuan18_negative_covered,
+               yuan18_complete_pairs, yuan18_surface_pair_angular_norm);
+        fflush(stdout);
+        endrun(8894);
     }
-    int yuan18_continuous_wind_active = (local.Yuan18_mdot_wind > 0 && local.Yuan18_v_wind > 0 && yuan18_surface_angular_norm > 0);
+    int yuan18_continuous_wind_active =
+        (yuan18_continuous_wind_requested && local.Yuan18_v_wind > 0 &&
+         yuan18_surface_pair_angular_norm > 0 && yuan18_complete_pairs > 0);
 #endif
 #ifdef BH_YUAN18_JET_CONTINUOUS
-    double yuan18_jet_surface_angular_norm=0, yuan18_jet_surface_angular_norm_pos=0, yuan18_jet_surface_angular_norm_neg=0;
-    for(k=0; k<YUAN18_BONDI_FLUX_N_SAMPLES; k++)
-    {
-        if(local.Yuan18_wind_surface_weight_sum[k] <= 0) {continue;}
-        double dir_q[3], cos_theta_q=0;
-        yuan18_wind_surface_direction(k, dir_q);
-        int kk; for(kk=0; kk<3; kk++) {cos_theta_q += dir_q[kk] * Yuan18_J_dir[kk];}
-        double angular_weight_q = yuan18_wind_angular_weight(cos_theta_q, 4);
-        if(angular_weight_q <= 0) {continue;}
-        yuan18_jet_surface_angular_norm += angular_weight_q;
-        if(cos_theta_q >= 0) {yuan18_jet_surface_angular_norm_pos += angular_weight_q;} else {yuan18_jet_surface_angular_norm_neg += angular_weight_q;}
-    }
-    int yuan18_continuous_jet_active = (local.Yuan18_mdot_jet > 0 && local.Yuan18_v_jet > 0 && yuan18_jet_surface_angular_norm > 0);
+    double yuan18_jet_surface_pair_angular_norm =
+        yuan18_complete_pair_angular_norm(local.Yuan18_wind_surface_weight_sum, Yuan18_J_dir,
+                                           4, NULL, NULL, NULL);
+    int yuan18_continuous_jet_active =
+        (local.Yuan18_mdot_jet > 0 && local.Yuan18_v_jet > 0 && yuan18_jet_surface_pair_angular_norm > 0);
 #endif
 #if defined(BH_WIND_KICK)
     double bh_mass_withdisk=local.BH_Mass;
@@ -740,14 +789,21 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 	                            double yuan18_wind_wt = 0, yuan18_dir_wt[3];
                             yuan18_compute_wind_surface_projection_to_gas(j, local.Pos, r, yuan18_r_inject_code, Yuan18_J_dir,
 	                                                                          local.Yuan18_mode_wind, local.Yuan18_wind_surface_weight_sum,
-	                                                                          yuan18_surface_angular_norm, yuan18_surface_angular_norm_pos,
-	                                                                          yuan18_surface_angular_norm_neg, &yuan18_wind_wt, yuan18_dir_wt);
+	                                                                          yuan18_surface_pair_angular_norm,
+	                                                                          &yuan18_wind_wt, yuan18_dir_wt);
 	                            double mdotdt_yuan18 = local.Yuan18_mdot_wind * local.Dt;
 	                            double m_wind = yuan18_wind_wt * local.Yuan18_mdot_wind * local.Dt; /* Yuan18 wind mass to couple */
 	                            if(m_wind > 0 && Mass_j > 0)
 	                            {
 	                                yuan18_add_continuous_outflow_to_gas(m_wind, mdotdt_yuan18, local.Yuan18_v_wind, local.Yuan18_eps_wind,
 	                                                                      yuan18_dir_wt, local.Vel, &Mass_j, Vel_j, &InternalEnergy_j);
+	                                out.Yuan18_wind_mass_coupled += m_wind;
+	                                double yuan18_v_wind_code = yuan18_code_velocity_from_physical(local.Yuan18_v_wind);
+	                                for(k=0;k<3;k++)
+	                                {
+	                                    out.Yuan18_wind_intrinsic_momentum_code[k] +=
+	                                        mdotdt_yuan18 * yuan18_v_wind_code * yuan18_dir_wt[k];
+	                                }
 	                                #pragma omp atomic
 	                                SphP[j].Yuan18WindMass += m_wind;
 	                                #pragma omp atomic
@@ -768,8 +824,8 @@ int blackhole_swallow_and_kick_evaluate(int target, int mode, int *exportflag, i
 	                            double yuan18_jet_wt = 0, yuan18_jet_dir_wt[3];
 	                            yuan18_compute_wind_surface_projection_to_gas(j, local.Pos, r, yuan18_r_inject_code, Yuan18_J_dir,
 	                                                                          4, local.Yuan18_wind_surface_weight_sum,
-	                                                                          yuan18_jet_surface_angular_norm, yuan18_jet_surface_angular_norm_pos,
-	                                                                          yuan18_jet_surface_angular_norm_neg, &yuan18_jet_wt, yuan18_jet_dir_wt);
+	                                                                          yuan18_jet_surface_pair_angular_norm,
+	                                                                          &yuan18_jet_wt, yuan18_jet_dir_wt);
 	                            double mdotdt_yuan18_jet = local.Yuan18_mdot_jet * local.Dt;
 	                            double m_jet = yuan18_jet_wt * local.Yuan18_mdot_jet * local.Dt; /* Yuan18 jet mass to couple */
 	                            if(m_jet > 0 && Mass_j > 0)
@@ -1401,6 +1457,213 @@ int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int n
 #endif
 
 
+#if defined(BH_YUAN18_WIND_SPAWN) || defined(BH_YUAN18_JET_SPAWN)
+struct yuan18_spawn_template_request
+{
+    MyDouble Pos[3];
+    int OwnerTask, OwnerRequestIndex, BHIndex, SpawnIndex, Resolved;
+    struct particle_data TemplateParticle;
+    struct gas_cell_data TemplateGas;
+};
+
+struct yuan18_spawn_template_query
+{
+    MyDouble Pos[3];
+    int OwnerTask, OwnerRequestIndex;
+};
+
+struct yuan18_spawn_template_record
+{
+    int OwnerRequestIndex;
+    struct particle_data TemplateParticle;
+    struct gas_cell_data TemplateGas;
+};
+
+struct yuan18_mpi_double_int
+{
+    double value;
+    int rank;
+};
+
+/* Resolve all launch templates collectively.  Every rank sees the same query list,
+   searches only its owned gas, and MPI_MINLOC selects the globally nearest cell.
+   The winning records are then sent only to the rank that owns each spawning BH. */
+static void yuan18_resolve_spawn_templates(struct yuan18_spawn_template_request *local_requests,
+                                           int n_local_requests)
+{
+    int q, k, task, n_global_requests=0;
+    int *query_counts=(int *)calloc(NTask,sizeof(int));
+    int *query_byte_counts=(int *)calloc(NTask,sizeof(int));
+    int *query_byte_offsets=(int *)calloc(NTask,sizeof(int));
+    if(query_counts==NULL || query_byte_counts==NULL || query_byte_offsets==NULL)
+        {endrun(8901);}
+
+    MPI_Allgather(&n_local_requests,1,MPI_INT,query_counts,1,MPI_INT,MPI_COMM_WORLD);
+    for(task=0;task<NTask;task++)
+    {
+        query_byte_offsets[task]=n_global_requests*(int)sizeof(struct yuan18_spawn_template_query);
+        query_byte_counts[task]=query_counts[task]*(int)sizeof(struct yuan18_spawn_template_query);
+        n_global_requests+=query_counts[task];
+    }
+    if(n_global_requests<=0)
+    {
+        free(query_byte_offsets); free(query_byte_counts); free(query_counts);
+        return;
+    }
+
+    struct yuan18_spawn_template_query *local_queries=(struct yuan18_spawn_template_query *)
+        malloc(DMAX(n_local_requests,1)*sizeof(struct yuan18_spawn_template_query));
+    struct yuan18_spawn_template_query *global_queries=(struct yuan18_spawn_template_query *)
+        malloc(n_global_requests*sizeof(struct yuan18_spawn_template_query));
+    struct yuan18_mpi_double_int *local_best=(struct yuan18_mpi_double_int *)
+        malloc(n_global_requests*sizeof(struct yuan18_mpi_double_int));
+    struct yuan18_mpi_double_int *global_best=(struct yuan18_mpi_double_int *)
+        malloc(n_global_requests*sizeof(struct yuan18_mpi_double_int));
+    int *local_best_index=(int *)malloc(n_global_requests*sizeof(int));
+    if(local_queries==NULL || global_queries==NULL || local_best==NULL || global_best==NULL ||
+       local_best_index==NULL) {endrun(8902);}
+
+    for(q=0;q<n_local_requests;q++)
+    {
+        for(k=0;k<3;k++) {local_queries[q].Pos[k]=local_requests[q].Pos[k];}
+        local_queries[q].OwnerTask=ThisTask;
+        local_queries[q].OwnerRequestIndex=q;
+        local_requests[q].OwnerTask=ThisTask;
+        local_requests[q].OwnerRequestIndex=q;
+        local_requests[q].Resolved=0;
+    }
+    MPI_Allgatherv(local_queries,n_local_requests*(int)sizeof(struct yuan18_spawn_template_query),MPI_BYTE,
+                   global_queries,query_byte_counts,query_byte_offsets,MPI_BYTE,MPI_COMM_WORLD);
+
+#pragma omp parallel for schedule(dynamic)
+    for(q=0;q<n_global_requests;q++)
+    {
+        double r2_min=DBL_MAX;
+        int template_cell=-1;
+        int jj;
+        for(jj=0;jj<N_gas;jj++)
+        {
+            if(P[jj].Type!=0 || P[jj].Mass<=0 || SphP[jj].Density<=0 ||
+               SphP[jj].recent_refinement_flag!=0) {continue;}
+            double dx=P[jj].Pos[0]-global_queries[q].Pos[0];
+            double dy=P[jj].Pos[1]-global_queries[q].Pos[1];
+            double dz=P[jj].Pos[2]-global_queries[q].Pos[2];
+            NEAREST_XYZ(dx,dy,dz,1);
+            double r2=dx*dx+dy*dy+dz*dz;
+            if(r2<r2_min) {r2_min=r2; template_cell=jj;}
+        }
+        local_best[q].value=r2_min;
+        local_best[q].rank=ThisTask;
+        local_best_index[q]=template_cell;
+    }
+    MPI_Allreduce(local_best,global_best,n_global_requests,MPI_DOUBLE_INT,MPI_MINLOC,MPI_COMM_WORLD);
+    for(q=0;q<n_global_requests;q++)
+    {
+        if(!isfinite(global_best[q].value) || global_best[q].value==DBL_MAX)
+        {
+            if(ThisTask==0)
+                {printf("Yuan18 spawn could not find any eligible gas template for global request %d.\n",q);}
+#if defined(BH_YUAN18_JET_SPAWN_EVERY_TIMESTEP) && !defined(BH_YUAN18_WIND_SPAWN)
+            /* All ranks have the same failed query. Leave every request unresolved;
+               the jet preflight will defer each complete batch without debiting mass. */
+            free(local_best_index); free(global_best); free(local_best);
+            free(global_queries); free(local_queries);
+            free(query_byte_offsets); free(query_byte_counts); free(query_counts);
+            return;
+#else
+            endrun(8903);
+#endif
+        }
+    }
+#ifdef BH_OUTPUT_MOREINFO
+    if(ThisTask==0)
+    {
+        int n_remote_templates=0;
+        for(q=0;q<n_global_requests;q++)
+            {if(global_best[q].rank!=global_queries[q].OwnerTask) {n_remote_templates++;}}
+        printf("[Yuan18-spawn-template] requests=%d remote_templates=%d\n",
+               n_global_requests,n_remote_templates);
+        fflush(stdout);
+    }
+#endif
+
+    int *send_counts=(int *)calloc(NTask,sizeof(int));
+    int *recv_counts=(int *)calloc(NTask,sizeof(int));
+    int *send_offsets=(int *)calloc(NTask,sizeof(int));
+    int *recv_offsets=(int *)calloc(NTask,sizeof(int));
+    int *send_byte_counts=(int *)calloc(NTask,sizeof(int));
+    int *recv_byte_counts=(int *)calloc(NTask,sizeof(int));
+    int *send_byte_offsets=(int *)calloc(NTask,sizeof(int));
+    int *recv_byte_offsets=(int *)calloc(NTask,sizeof(int));
+    int *send_cursor=(int *)calloc(NTask,sizeof(int));
+    if(send_counts==NULL || recv_counts==NULL || send_offsets==NULL || recv_offsets==NULL ||
+       send_byte_counts==NULL || recv_byte_counts==NULL || send_byte_offsets==NULL ||
+       recv_byte_offsets==NULL || send_cursor==NULL) {endrun(8904);}
+
+    for(q=0;q<n_global_requests;q++)
+        {if(global_best[q].rank==ThisTask) {send_counts[global_queries[q].OwnerTask]++;}}
+    MPI_Alltoall(send_counts,1,MPI_INT,recv_counts,1,MPI_INT,MPI_COMM_WORLD);
+    int nsend=0,nrecv=0;
+    for(task=0;task<NTask;task++)
+    {
+        send_offsets[task]=nsend; recv_offsets[task]=nrecv;
+        nsend+=send_counts[task]; nrecv+=recv_counts[task];
+        send_byte_counts[task]=send_counts[task]*(int)sizeof(struct yuan18_spawn_template_record);
+        recv_byte_counts[task]=recv_counts[task]*(int)sizeof(struct yuan18_spawn_template_record);
+        send_byte_offsets[task]=send_offsets[task]*(int)sizeof(struct yuan18_spawn_template_record);
+        recv_byte_offsets[task]=recv_offsets[task]*(int)sizeof(struct yuan18_spawn_template_record);
+        send_cursor[task]=send_offsets[task];
+    }
+    struct yuan18_spawn_template_record *send_records=(struct yuan18_spawn_template_record *)
+        malloc(DMAX(nsend,1)*sizeof(struct yuan18_spawn_template_record));
+    struct yuan18_spawn_template_record *recv_records=(struct yuan18_spawn_template_record *)
+        malloc(DMAX(nrecv,1)*sizeof(struct yuan18_spawn_template_record));
+    if(send_records==NULL || recv_records==NULL) {endrun(8905);}
+
+    for(q=0;q<n_global_requests;q++)
+    {
+        if(global_best[q].rank!=ThisTask) {continue;}
+        int template_cell=local_best_index[q];
+        int owner=global_queries[q].OwnerTask;
+        int slot=send_cursor[owner]++;
+        send_records[slot].OwnerRequestIndex=global_queries[q].OwnerRequestIndex;
+        send_records[slot].TemplateParticle=P[template_cell];
+        send_records[slot].TemplateGas=SphP[template_cell];
+    }
+    MPI_Alltoallv(send_records,send_byte_counts,send_byte_offsets,MPI_BYTE,
+                  recv_records,recv_byte_counts,recv_byte_offsets,MPI_BYTE,MPI_COMM_WORLD);
+    for(q=0;q<nrecv;q++)
+    {
+        int slot=recv_records[q].OwnerRequestIndex;
+        if(slot<0 || slot>=n_local_requests) {endrun(8906);}
+        local_requests[slot].TemplateParticle=recv_records[q].TemplateParticle;
+        local_requests[slot].TemplateGas=recv_records[q].TemplateGas;
+        local_requests[slot].Resolved=1;
+    }
+    int missing_local=0,missing_global=0;
+    for(q=0;q<n_local_requests;q++) {if(!local_requests[q].Resolved) {missing_local++;}}
+    MPI_Allreduce(&missing_local,&missing_global,1,MPI_INT,MPI_SUM,MPI_COMM_WORLD);
+    if(missing_global>0) {endrun(8907);}
+
+    free(recv_records); free(send_records); free(send_cursor);
+    free(recv_byte_offsets); free(send_byte_offsets); free(recv_byte_counts); free(send_byte_counts);
+    free(recv_offsets); free(send_offsets); free(recv_counts); free(send_counts);
+    free(local_best_index); free(global_best); free(local_best);
+    free(global_queries); free(local_queries);
+    free(query_byte_offsets); free(query_byte_counts); free(query_counts);
+}
+
+static struct yuan18_spawn_template_request *yuan18_get_resolved_spawn_template(
+    struct yuan18_spawn_template_request *requests, int n_requests, int bh_index, int spawn_index)
+{
+    int q;
+    for(q=0;q<n_requests;q++)
+        {if(requests[q].BHIndex==bh_index && requests[q].SpawnIndex==spawn_index) {return &requests[q];}}
+    return NULL;
+}
+#endif
+
+
 #ifdef BH_YUAN18_WIND_SPAWN
 /* Yuan18 angular sampler -- chooses (theta, phi) in the local Yuan18 wind-axis frame per Yuan18 mode, then rotates into the lab frame.
    theta is measured from the wind axis nz; nx,ny complete the orthonormal basis (nx is reconstructed from ny x nz).
@@ -1453,31 +1716,56 @@ void get_wind_spawn_direction_yuan18(int i, int num_spawned_this_call, int n_par
 }
 
 
-static int yuan18_find_wind_template_cell(double *target_pos)
+static int yuan18_wind_spawn_count(int i)
 {
-    int j, dummy_gas_tag = -1;
-    double r2_min = MAX_REAL_NUMBER;
-    for(j = 0; j < N_gas; j++)
+    if(BPP(i).Yuan18_BH_mode_wind == 0) {return 0;}
+    if(BPP(i).Yuan18_BH_r_inject <= 0 || BPP(i).Yuan18_BH_v_wind <= 0) {return 0;}
+    double target_mass = target_mass_for_wind_spawning(i);
+    if(target_mass <= 0) {return 0;}
+    int count = (int)floor(BPP(i).Yuan18_BH_unspawned_wind_mass / target_mass);
+    if(count < BH_YUAN18_WIND_SPAWN) {return 0;}
+    if(count % 2) {count--;}
+    if(count < 2) {return 0;}
+    int event_cap = DMAX(20,(int)(3.*BH_YUAN18_WIND_SPAWN+0.1));
+    if(event_cap % 2) {event_cap++;}
+    return DMIN(count,event_cap);
+}
+
+
+static void yuan18_build_wind_spawn_requests_for_bh(int i, int n_particles_split,
+                                                    struct yuan18_spawn_template_request *requests,
+                                                    int request_offset)
+{
+    int k, spawn_index;
+    double d_r=yuan18_wind_injection_radius_code(BPP(i).Yuan18_BH_r_inject);
+    double jz[3]={BPP(i).Yuan18_BH_J_dir[0],BPP(i).Yuan18_BH_J_dir[1],BPP(i).Yuan18_BH_J_dir[2]};
+    double jznorm=jz[0]*jz[0]+jz[1]*jz[1]+jz[2]*jz[2];
+    if(jznorm>0) {jznorm=1./sqrt(jznorm); for(k=0;k<3;k++) {jz[k]*=jznorm;}}
+    else {jz[0]=jz[1]=0; jz[2]=1;}
+    double jy[3]={0,1,0},dot_product=0,norm=0;
+    for(k=0;k<3;k++) {dot_product+=jy[k]*jz[k];}
+    for(k=0;k<3;k++) {jy[k]-=dot_product*jz[k]; norm+=jy[k]*jy[k];}
+    if(norm>0) {norm=1./sqrt(norm); for(k=0;k<3;k++) {jy[k]*=norm;}}
+    else {jy[0]=1; jy[1]=jy[2]=0;}
+    double veldir[3]={0,0,0},dpdir[3]={0,0,0};
+    for(spawn_index=0;spawn_index<n_particles_split;spawn_index++)
     {
-        if(P[j].Type == 0)
-        {
-            if((P[j].Mass > 0) && (SphP[j].Density > 0) && (SphP[j].recent_refinement_flag == 0))
-            {
-                double dx = P[j].Pos[0] - target_pos[0], dy = P[j].Pos[1] - target_pos[1], dz = P[j].Pos[2] - target_pos[2];
-                NEAREST_XYZ(dx, dy, dz, 1);
-                double r2 = dx*dx + dy*dy + dz*dz;
-                if(r2 < r2_min) {r2_min = r2; dummy_gas_tag = j;}
-            }
-        }
+        struct yuan18_spawn_template_request *request=&requests[request_offset+spawn_index];
+        get_wind_spawn_direction_yuan18(i,spawn_index,n_particles_split,BPP(i).Yuan18_BH_mode_wind,
+                                        jy,jz,veldir,dpdir);
+        for(k=0;k<3;k++) {request->Pos[k]=P[i].Pos[k]+dpdir[k]*d_r;}
+        request->BHIndex=i;
+        request->SpawnIndex=spawn_index;
+        request->Resolved=0;
     }
-    return dummy_gas_tag;
 }
 
 
 /* Yuan18 spawn routine: emits the accumulated reservoir for a single BH once it contains enough mass
    for a well-sampled angular batch. mode/v_wind/eps_wind and r_inject use the current Yuan18 state.
    Angular sampling uses the current BH specific-angular-momentum wind axis as the reference frame. */
-int blackhole_yuan18_spawn_particle_wind_shell(int i, int num_already_spawned)
+static int blackhole_yuan18_spawn_particle_wind_shell(
+    int i, int num_already_spawned, struct yuan18_spawn_template_request *requests, int n_requests)
 {
     int mode_wind = BPP(i).Yuan18_BH_mode_wind;
     if(mode_wind == 0) {return 0;} /* NONE: nothing to spawn */
@@ -1485,19 +1773,14 @@ int blackhole_yuan18_spawn_particle_wind_shell(int i, int num_already_spawned)
     if(total_mass_in_winds <= 0) {return 0;}
     double target_wind_mass = target_mass_for_wind_spawning(i);
     if(target_wind_mass <= 0) {return 0;}
-    int n_particles_split = (int) floor(total_mass_in_winds / target_wind_mass);
+    int n_particles_split = yuan18_wind_spawn_count(i);
     int k=0, n_spawned_actual=0, spawn_index; long j;
 
-    /* Defer small reservoirs and cap bursty events following the native BH_WIND_SPAWN batching pattern.
-       Each spawned particle keeps the target mass; any excess reservoir mass remains queued for later. */
-    if(n_particles_split < BH_YUAN18_WIND_SPAWN) {return 0;}
-    if((n_particles_split % 2) != 0) {n_particles_split -= 1;}
-    if(n_particles_split < 2) {return 0;}
-    int n0max = DMAX(20, (int)(3.*(BH_YUAN18_WIND_SPAWN)+0.1));
-    if((n0max % 2) != 0) {n0max += 1;}
-    if(n_particles_split > n0max) {n_particles_split = n0max;}
+    if(n_particles_split <= 0) {return 0;}
 
     double mass_of_new_particle = target_wind_mass;
+    double event_mass = n_particles_split * mass_of_new_particle;
+    if(event_mass > P[i].Mass) {return 0;}
 
     if(NumPart + num_already_spawned + n_particles_split >= All.MaxPart)
     {
@@ -1514,25 +1797,23 @@ int blackhole_yuan18_spawn_particle_wind_shell(int i, int num_already_spawned)
     double jz[3] = {BPP(i).Yuan18_BH_J_dir[0], BPP(i).Yuan18_BH_J_dir[1], BPP(i).Yuan18_BH_J_dir[2]};
     double jznorm = jz[0]*jz[0] + jz[1]*jz[1] + jz[2]*jz[2];
     if(jznorm > 0) {jznorm = 1.0/sqrt(jznorm); for(k=0;k<3;k++) {jz[k] *= jznorm;}} else {jz[0]=0; jz[1]=0; jz[2]=1;}
-    double jy[3] = {0,1,0}; double dot_product = 0, norm = 0;
-    for(k=0;k<3;k++) {dot_product += jy[k] * jz[k];}
-    for(k=0;k<3;k++) {jy[k] -= dot_product * jz[k]; norm += jy[k]*jy[k];}
-    if(norm > 0) {norm = 1.0/sqrt(norm); for(k=0;k<3;k++) {jy[k] *= norm;}} else {jy[0]=1; jy[1]=0; jy[2]=0;}
-
     double veldir[3], dpdir[3];
     double v_magnitude_physical = BPP(i).Yuan18_BH_v_wind;
     double eps_wind = BPP(i).Yuan18_BH_eps_wind;
 
     for(spawn_index = 0; spawn_index < n_particles_split; spawn_index++)
     {
-        get_wind_spawn_direction_yuan18(i, spawn_index, n_particles_split, mode_wind, jy, jz, veldir, dpdir);
-        double target_pos[3];
-        for(k=0;k<3;k++) {target_pos[k] = P[i].Pos[k] + dpdir[k]*d_r;}
-        int template_cell = yuan18_find_wind_template_cell(target_pos);
-        if(template_cell < 0) {continue;}
+        struct yuan18_spawn_template_request *request=
+            yuan18_get_resolved_spawn_template(requests,n_requests,i,spawn_index);
+        if(request==NULL || !request->Resolved) {endrun(8908);}
+        for(k=0;k<3;k++)
+        {
+            dpdir[k]=(request->Pos[k]-P[i].Pos[k])/d_r;
+            veldir[k]=dpdir[k];
+        }
 
         j = NumPart + num_already_spawned + n_spawned_actual;
-        P[j] = P[template_cell]; SphP[j] = SphP[template_cell];
+        P[j] = request->TemplateParticle; SphP[j] = request->TemplateGas;
 
         P[j].TimeBin = bin;
         NextActiveParticle[j] = FirstActiveParticle; FirstActiveParticle = j; NumForceUpdate++;
@@ -1625,15 +1906,15 @@ int blackhole_yuan18_spawn_particle_wind_shell(int i, int num_already_spawned)
 
 #ifdef METALS
         /* TODO(Yuan18): assign MACER/Yuan18 wind metallicity and hot/cold wind tracer fields instead of copying the cloned gas cell. */
-        for(k=0;k<NUM_METAL_SPECIES;k++) {P[j].Metallicity[k] = P[template_cell].Metallicity[k];}
+        for(k=0;k<NUM_METAL_SPECIES;k++) {P[j].Metallicity[k] = request->TemplateParticle.Metallicity[k];}
 #endif
 
-        for(k=0;k<3;k++) {P[j].Pos[k] = target_pos[k]; P[j].Vel[k] = P[i].Vel[k] + veldir[k]*v_magnitude_physical*All.cf_atime; SphP[j].VelPred[k] = P[j].Vel[k];}
+        for(k=0;k<3;k++) {P[j].Pos[k] = request->Pos[k]; P[j].Vel[k] = P[i].Vel[k] + veldir[k]*yuan18_code_velocity_from_physical(v_magnitude_physical); SphP[j].VelPred[k] = P[j].Vel[k];}
 #ifdef BH_OUTPUT_MOREINFO
         {
             double cos_theta_launch = dpdir[0]*jz[0] + dpdir[1]*jz[1] + dpdir[2]*jz[2];
             fprintf(FdBhWindDetails,
-                    "Yuan18-wind-launch %.16g %llu %llu %llu %d %g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %2.16g %llu %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g\n",
+                    "Yuan18-wind-launch %.16g %llu %llu %llu %d %g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %2.16g %llu %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g %2.16g %2.16g\n",
                     All.Time, (unsigned long long)P[j].ID, (unsigned long long)P[j].ID_child_number, (unsigned long long)P[j].ID_generation,
                     mode_wind, P[j].Mass,
                     P[j].Pos[0], P[j].Pos[1], P[j].Pos[2],
@@ -1643,7 +1924,8 @@ int blackhole_yuan18_spawn_particle_wind_shell(int i, int num_already_spawned)
                     jz[0], jz[1], jz[2],
                     cos_theta_launch, (unsigned long long)P[i].ID,
                     P[i].Pos[0], P[i].Pos[1], P[i].Pos[2],
-                    v_magnitude_physical, eps_wind, d_r);
+                    v_magnitude_physical, eps_wind, d_r, All.cf_atime,
+                    yuan18_physical_length_from_code(d_r));
             fflush(FdBhWindDetails);
         }
 #endif
@@ -1671,32 +1953,57 @@ int blackhole_yuan18_spawn_particle_wind_shell(int i, int num_already_spawned)
    Mirrors spawn_bh_wind_feedback but uses Yuan18-specific reservoir/threshold; Yuan18 winds spawn only from Type==5 BHs. */
 int spawn_bh_yuan18_wind_feedback(double *mass_spawned_out)
 {
-    int i, n_particles_split = 0, MPI_n_particles_split;
+    int i, n_particles_split = 0, MPI_n_particles_split, n_local_requests=0;
     double mass_spawned = 0, MPI_mass_spawned = 0;
+
+    /* First build every local launch position without mutating particle state.
+       The exact planned count is also the capacity reservation for this rank. */
+    for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
+    {
+        if(P[i].Type != 5) {continue;}
+        int count=yuan18_wind_spawn_count(i);
+        if(count<=0 || count*target_mass_for_wind_spawning(i)>P[i].Mass) {continue;}
+#if defined(SINGLE_STAR_SINK_DYNAMICS)
+        if((P[i].Mass<=3.5*BPP(i).Sink_Formation_Mass) ||
+           (P[i].BH_Mass*UNIT_MASS_IN_SOLAR<0.01)) {continue;}
+#endif
+        int nmax=(int)(0.99*All.MaxPart); if(All.MaxPart-20<nmax) {nmax=All.MaxPart-20;}
+        if(NumPart+n_local_requests+count>=nmax) {continue;}
+        n_local_requests+=count;
+    }
+    struct yuan18_spawn_template_request *requests=(struct yuan18_spawn_template_request *)
+        malloc(DMAX(n_local_requests,1)*sizeof(struct yuan18_spawn_template_request));
+    if(requests==NULL) {endrun(8909);}
+    int request_offset=0;
+    for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
+    {
+        if(P[i].Type != 5) {continue;}
+        int count=yuan18_wind_spawn_count(i);
+        if(count<=0 || count*target_mass_for_wind_spawning(i)>P[i].Mass) {continue;}
+#if defined(SINGLE_STAR_SINK_DYNAMICS)
+        if((P[i].Mass<=3.5*BPP(i).Sink_Formation_Mass) ||
+           (P[i].BH_Mass*UNIT_MASS_IN_SOLAR<0.01)) {continue;}
+#endif
+        int nmax=(int)(0.99*All.MaxPart); if(All.MaxPart-20<nmax) {nmax=All.MaxPart-20;}
+        if(NumPart+request_offset+count>=nmax) {continue;}
+        yuan18_build_wind_spawn_requests_for_bh(i,count,requests,request_offset);
+        request_offset+=count;
+    }
+    if(request_offset!=n_local_requests) {endrun(8910);}
+    yuan18_resolve_spawn_templates(requests,n_local_requests);
 
     for(i = FirstActiveParticle; i >= 0; i = NextActiveParticle[i])
     {
-        int nmax = (int)(0.99*All.MaxPart); if(All.MaxPart-20 < nmax) {nmax = All.MaxPart - 20;}
-        int ptype_can_spawn = 0; if(P[i].Type == 5) {ptype_can_spawn = 1;}
-        if((NumPart + n_particles_split + 2*BH_YUAN18_WIND_SPAWN < nmax) && (ptype_can_spawn == 1))
-        {
-            int sink_eligible_to_spawn = 0;
-            int reservoir_mode_wind = BPP(i).Yuan18_BH_mode_wind;
-            double target_wind_mass = target_mass_for_wind_spawning(i);
-            double n_reservoir_yuan18 = (target_wind_mass > 0) ? (BPP(i).Yuan18_BH_unspawned_wind_mass / target_wind_mass) : 0;
-            if(reservoir_mode_wind != 0 && n_reservoir_yuan18 >= BH_YUAN18_WIND_SPAWN) {sink_eligible_to_spawn = 1;}
-#if defined(SINGLE_STAR_SINK_DYNAMICS)
-            if(P[i].Type==5) {if((P[i].Mass <= 3.5*BPP(i).Sink_Formation_Mass) || (P[i].BH_Mass*UNIT_MASS_IN_SOLAR < 0.01)) {sink_eligible_to_spawn=0;}}
-#endif
-            if(sink_eligible_to_spawn)
-            {
-                double mass_before_spawn = BPP(i).Yuan18_BH_unspawned_wind_mass;
-                int n_spawned_this_bh = blackhole_yuan18_spawn_particle_wind_shell(i, n_particles_split);
-                if(n_spawned_this_bh > 0) {mass_spawned += mass_before_spawn - BPP(i).Yuan18_BH_unspawned_wind_mass;}
-                n_particles_split += n_spawned_this_bh;
-            }
-        }
+        int count=(P[i].Type==5) ? yuan18_wind_spawn_count(i) : 0;
+        if(count<=0 || yuan18_get_resolved_spawn_template(requests,n_local_requests,i,0)==NULL) {continue;}
+        double mass_before_spawn=BPP(i).Yuan18_BH_unspawned_wind_mass;
+        int n_spawned_this_bh=blackhole_yuan18_spawn_particle_wind_shell(
+            i,n_particles_split,requests,n_local_requests);
+        if(n_spawned_this_bh>0)
+            {mass_spawned+=mass_before_spawn-BPP(i).Yuan18_BH_unspawned_wind_mass;}
+        n_particles_split+=n_spawned_this_bh;
     }
+    free(requests);
     MPI_Allreduce(&n_particles_split, &MPI_n_particles_split, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(&mass_spawned, &MPI_mass_spawned, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     if(mass_spawned_out != NULL) {*mass_spawned_out = MPI_mass_spawned;}
@@ -1756,24 +2063,6 @@ static void get_jet_spawn_direction_yuan18(int i, int num_spawned_this_call, int
 }
 
 
-static int yuan18_find_jet_template_cell(double *target_pos)
-{
-    int j, template_cell = -1;
-    double r2_min = MAX_REAL_NUMBER;
-    for(j=0; j<N_gas; j++)
-    {
-        if(P[j].Type != 0 || P[j].Mass <= 0 || SphP[j].Density <= 0 || SphP[j].recent_refinement_flag != 0) {continue;}
-        double dx = P[j].Pos[0] - target_pos[0];
-        double dy = P[j].Pos[1] - target_pos[1];
-        double dz = P[j].Pos[2] - target_pos[2];
-        NEAREST_XYZ(dx, dy, dz, 1);
-        double r2 = dx*dx + dy*dy + dz*dz;
-        if(r2 < r2_min) {r2_min = r2; template_cell = j;}
-    }
-    return template_cell;
-}
-
-
 static double yuan18_spawn_launch_radius_physical(int i, int mode_wind)
 {
     if(mode_wind <= 0) {return 0;}
@@ -1785,6 +2074,12 @@ static double yuan18_spawn_launch_radius_physical(int i, int mode_wind)
    to an even per-event cap, while retaining the unlaunched remainder. */
 static int yuan18_jet_spawn_count(int i)
 {
+    if(BPP(i).Yuan18_BH_mode_wind != 1 || BPP(i).Yuan18_BH_r_inject <= 0 ||
+       BPP(i).Yuan18_BH_v_jet <= 0) {return 0;}
+#ifdef BH_YUAN18_JET_SPAWN_EVERY_TIMESTEP
+    if(BPP(i).Yuan18_BH_mdot_jet <= 0 || BPP(i).Yuan18_BH_unspawned_jet_mass <= 0) {return 0;}
+    return 2 * BH_YUAN18_JET_SPAWN;
+#else
     double target_mass_yuan18 = target_mass_for_wind_spawning(i);
     if(target_mass_yuan18 <= 0) {return 0;}
     int n_particles_split = (int) floor(BPP(i).Yuan18_BH_unspawned_jet_mass / target_mass_yuan18);
@@ -1795,14 +2090,66 @@ static int yuan18_jet_spawn_count(int i)
     if((n0max % 2) != 0) {n0max += 1;}
     if(n_particles_split > n0max) {n_particles_split = n0max;}
     return n_particles_split;
+#endif
+}
+
+
+#ifdef BH_YUAN18_JET_SPAWN_EVERY_TIMESTEP
+/* Keep deferred packets in the existing restartable reservoir. Normally this is
+   exactly mdot_jet*dt from the current active BH step; no target-mass floor applies. */
+static double yuan18_jet_spawn_particle_mass(int i)
+{
+    return BPP(i).Yuan18_BH_unspawned_jet_mass / (2.0 * BH_YUAN18_JET_SPAWN);
+}
+
+static void yuan18_jet_spawn_deferred(int i, const char *reason)
+{
+    printf("[Yuan18-jet-every-step-deferred] time=%.16g bh=%llu pending_mass=%.16g reason=%s\n",
+           All.Time, (unsigned long long)P[i].ID, BPP(i).Yuan18_BH_unspawned_jet_mass, reason);
+    fflush(stdout);
+}
+#endif
+
+
+static void yuan18_build_jet_spawn_requests_for_bh(int i, int n_particles_split,
+                                                   struct yuan18_spawn_template_request *requests,
+                                                   int request_offset)
+{
+    int k,spawn_index;
+    double d_r=yuan18_wind_injection_radius_code(yuan18_spawn_launch_radius_physical(i,4));
+    double jz[3]={BPP(i).Yuan18_BH_J_dir[0],BPP(i).Yuan18_BH_J_dir[1],BPP(i).Yuan18_BH_J_dir[2]};
+    double jznorm=jz[0]*jz[0]+jz[1]*jz[1]+jz[2]*jz[2];
+    if(jznorm>0) {jznorm=1./sqrt(jznorm); for(k=0;k<3;k++) {jz[k]*=jznorm;}}
+    else {jz[0]=jz[1]=0; jz[2]=1;}
+    double jy[3]={0,1,0},dot_product=0,norm=0;
+    for(k=0;k<3;k++) {dot_product+=jy[k]*jz[k];}
+    for(k=0;k<3;k++) {jy[k]-=dot_product*jz[k]; norm+=jy[k]*jy[k];}
+    if(norm>0) {norm=1./sqrt(norm); for(k=0;k<3;k++) {jy[k]*=norm;}}
+    else {jy[0]=1; jy[1]=jy[2]=0;}
+    double veldir[3]={0,0,0},dpdir[3]={0,0,0};
+    for(spawn_index=0;spawn_index<n_particles_split;spawn_index++)
+    {
+        struct yuan18_spawn_template_request *request=&requests[request_offset+spawn_index];
+        get_jet_spawn_direction_yuan18(i,spawn_index,n_particles_split,4,jy,jz,veldir,dpdir);
+        for(k=0;k<3;k++) {request->Pos[k]=P[i].Pos[k]+dpdir[k]*d_r;}
+        request->BHIndex=i;
+        request->SpawnIndex=spawn_index;
+        request->Resolved=0;
+    }
 }
 
 
 static int blackhole_yuan18_spawn_particle_shell(int i, int num_already_spawned, int mode_wind,
-                                                 const char *launch_label)
+                                                 const char *launch_label,
+                                                 struct yuan18_spawn_template_request *requests,
+                                                 int n_requests)
 {
     if(BPP(i).Yuan18_BH_mode_wind != 1 || mode_wind != 4) {return 0;}
+#ifdef BH_YUAN18_JET_SPAWN_EVERY_TIMESTEP
+    double target_mass_yuan18 = yuan18_jet_spawn_particle_mass(i);
+#else
     double target_mass_yuan18 = target_mass_for_wind_spawning(i);
+#endif
     double v_magnitude_physical = BPP(i).Yuan18_BH_v_jet;
     double eps_outflow = BPP(i).Yuan18_BH_eps_jet;
     int n_particles_split = yuan18_jet_spawn_count(i);
@@ -1811,8 +2158,26 @@ static int blackhole_yuan18_spawn_particle_shell(int i, int num_already_spawned,
     if(event_mass > P[i].Mass) {return 0;}
     if(NumPart + num_already_spawned + n_particles_split >= All.MaxPart)
     {
+#ifdef BH_YUAN18_JET_SPAWN_EVERY_TIMESTEP
+        yuan18_jet_spawn_deferred(i,"particle_capacity");
+#endif
         return 0;
     }
+
+#ifdef BH_YUAN18_JET_SPAWN_EVERY_TIMESTEP
+    /* Preflight the complete antipodal batch before adding any particles. */
+    int request_index;
+    for(request_index=0; request_index<n_particles_split; request_index++)
+    {
+        struct yuan18_spawn_template_request *request=
+            yuan18_get_resolved_spawn_template(requests,n_requests,i,request_index);
+        if(request==NULL || !request->Resolved)
+        {
+            yuan18_jet_spawn_deferred(i,"missing_gas_template");
+            return 0;
+        }
+    }
+#endif
 
     double d_r = yuan18_wind_injection_radius_code(yuan18_spawn_launch_radius_physical(i, mode_wind));
     if(d_r <= 0) {return 0;}
@@ -1828,46 +2193,21 @@ static int blackhole_yuan18_spawn_particle_shell(int i, int num_already_spawned,
         for(k=0; k<3; k++) {jz[k] *= jznorm;}
     }
     else {jz[0]=0; jz[1]=0; jz[2]=1;}
-    double jy[3] = {0,1,0}, dot_product = 0, norm = 0;
-    for(k=0; k<3; k++) {dot_product += jy[k] * jz[k];}
-    for(k=0; k<3; k++) {jy[k] -= dot_product * jz[k]; norm += jy[k]*jy[k];}
-    if(norm > 0)
-    {
-        norm = 1.0 / sqrt(norm);
-        for(k=0; k<3; k++) {jy[k] *= norm;}
-    }
-    else {jy[0]=1; jy[1]=0; jy[2]=0;}
-
-    /* Resolve every launch direction and template cell before mutating particle,
-       tree, time-bin, sink-mass, or reservoir state. */
-    int template_cells[n_particles_split];
-    double target_positions[n_particles_split][3];
-    double velocity_directions[n_particles_split][3];
     double veldir[3] = {0,0,0}, dpdir[3] = {0,0,0};
     for(spawn_index=0; spawn_index<n_particles_split; spawn_index++)
     {
-        get_jet_spawn_direction_yuan18(i, spawn_index, n_particles_split, mode_wind, jy, jz, veldir, dpdir);
+        struct yuan18_spawn_template_request *request=
+            yuan18_get_resolved_spawn_template(requests,n_requests,i,spawn_index);
+        if(request==NULL || !request->Resolved) {endrun(8911);}
         for(k=0; k<3; k++)
         {
-            target_positions[spawn_index][k] = P[i].Pos[k] + dpdir[k]*d_r;
-            velocity_directions[spawn_index][k] = veldir[k];
-        }
-        template_cells[spawn_index] = yuan18_find_jet_template_cell(target_positions[spawn_index]);
-        if(template_cells[spawn_index] < 0) {return 0;}
-    }
-
-    for(spawn_index=0; spawn_index<n_particles_split; spawn_index++)
-    {
-        int template_cell = template_cells[spawn_index];
-        for(k=0; k<3; k++)
-        {
-            veldir[k] = velocity_directions[spawn_index][k];
-            dpdir[k] = (target_positions[spawn_index][k] - P[i].Pos[k]) / d_r;
+            dpdir[k]=(request->Pos[k]-P[i].Pos[k])/d_r;
+            veldir[k]=dpdir[k];
         }
 
         j = NumPart + num_already_spawned + n_spawned_actual;
-        P[j] = P[template_cell];
-        SphP[j] = SphP[template_cell];
+        P[j] = request->TemplateParticle;
+        SphP[j] = request->TemplateGas;
         P[j].TimeBin = bin;
         NextActiveParticle[j] = FirstActiveParticle;
         FirstActiveParticle = j;
@@ -1911,6 +2251,22 @@ static int blackhole_yuan18_spawn_particle_shell(int i, int num_already_spawned,
 #ifdef GALSF
         SphP[j].Sfr = 0;
 #endif
+#ifdef RADTRANSFER
+        /* A cloned template cell can carry finite radiation energy. Do not duplicate that energy in
+         * newly spawned jet material; initialize the native RT state as in the other spawn paths. */
+        for(k=0; k<N_RT_FREQ_BINS; k++)
+        {
+            SphP[j].Rad_E_gamma[k] = 0;
+#if defined(RT_EVOLVE_ENERGY)
+            SphP[j].Rad_E_gamma_Pred[k] = 0;
+            SphP[j].Dt_Rad_E_gamma[k] = 0;
+#endif
+#if defined(RT_EVOLVE_FLUX)
+            int kdir;
+            for(kdir=0; kdir<3; kdir++) {SphP[j].Rad_Flux[k][kdir] = 0;}
+#endif
+        }
+#endif
 
         P[j].ID = All.AGNWindID;
 #ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
@@ -1931,12 +2287,15 @@ static int blackhole_yuan18_spawn_particle_shell(int i, int num_already_spawned,
 #endif
         for(k=0; k<3; k++)
         {
-            P[j].Pos[k] = target_positions[spawn_index][k];
-            P[j].Vel[k] = P[i].Vel[k] + veldir[k]*v_magnitude_physical*All.cf_atime;
+            P[j].Pos[k] = request->Pos[k];
+            P[j].Vel[k] = P[i].Vel[k] + veldir[k]*yuan18_code_velocity_from_physical(v_magnitude_physical);
             SphP[j].VelPred[k] = P[j].Vel[k];
         }
-        SphP[j].InternalEnergy = eps_outflow;
-        SphP[j].InternalEnergyPred = eps_outflow;
+        /* Yuan18 assigns zero jet internal energy, but GIZMO gas must respect its configured
+         * temperature floor. In particular, zero temperature makes RT H/He rate coefficients
+         * singular on the first active step after spawning. */
+        SphP[j].InternalEnergy = DMAX(eps_outflow, All.MinEgySpec);
+        SphP[j].InternalEnergyPred = SphP[j].InternalEnergy;
         SphP[j].MaxSignalVel = 2.0 * DMAX(v_magnitude_physical, SphP[j].MaxSignalVel);
         SphP[j].ConditionNumber *= 100.0;
         SphP[j].recent_refinement_flag = 1;
@@ -1957,14 +2316,15 @@ static int blackhole_yuan18_spawn_particle_shell(int i, int num_already_spawned,
 #ifdef BH_OUTPUT_MOREINFO
         double cos_theta_launch = dpdir[0]*jz[0] + dpdir[1]*jz[1] + dpdir[2]*jz[2];
         fprintf(FdBhWindDetails,
-                "%s %.16g %llu %llu %llu %d %g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %2.16g %llu %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g\n",
+                "%s %.16g %llu %llu %llu %d %g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g  %2.16g %llu %2.16g %2.16g %2.16g  %2.16g %2.16g %2.16g %2.16g %2.16g\n",
                 launch_label, All.Time, (unsigned long long)P[j].ID,
                 (unsigned long long)P[j].ID_child_number, (unsigned long long)P[j].ID_generation,
                 mode_wind, P[j].Mass, P[j].Pos[0], P[j].Pos[1], P[j].Pos[2],
                 P[j].Vel[0], P[j].Vel[1], P[j].Vel[2], dpdir[0], dpdir[1], dpdir[2],
                 veldir[0], veldir[1], veldir[2], jz[0], jz[1], jz[2], cos_theta_launch,
                 (unsigned long long)P[i].ID, P[i].Pos[0], P[i].Pos[1], P[i].Pos[2],
-                v_magnitude_physical, eps_outflow, d_r);
+                v_magnitude_physical, eps_outflow, d_r, All.cf_atime,
+                yuan18_physical_length_from_code(d_r));
         fflush(FdBhWindDetails);
 #endif
         force_add_star_to_tree(i, j);
@@ -1974,6 +2334,10 @@ static int blackhole_yuan18_spawn_particle_shell(int i, int num_already_spawned,
     if(n_spawned_actual != n_particles_split) {endrun(8889);}
     P[i].Mass -= event_mass;
     BPP(i).Yuan18_BH_unspawned_jet_mass -= event_mass;
+#ifdef BH_YUAN18_JET_SPAWN_EVERY_TIMESTEP
+    /* The whole pending packet was emitted; remove division/multiplication roundoff. */
+    BPP(i).Yuan18_BH_unspawned_jet_mass = 0;
+#endif
     if(BPP(i).Yuan18_BH_unspawned_jet_mass < 0) {BPP(i).Yuan18_BH_unspawned_jet_mass = 0;}
 #ifdef BH_OUTPUT_MOREINFO
     fprintf(FdBhWindDetails, "Yuan18-jet-reservoir-launch %.16g %llu %d %g %g %d\n",
@@ -1985,31 +2349,73 @@ static int blackhole_yuan18_spawn_particle_shell(int i, int num_already_spawned,
 }
 
 
-int blackhole_yuan18_spawn_particle_jet_shell(int i, int num_already_spawned)
+static int blackhole_yuan18_spawn_particle_jet_shell(
+    int i, int num_already_spawned, struct yuan18_spawn_template_request *requests, int n_requests)
 {
-    return blackhole_yuan18_spawn_particle_shell(i, num_already_spawned, 4, "Yuan18-jet-launch");
+    return blackhole_yuan18_spawn_particle_shell(i,num_already_spawned,4,"Yuan18-jet-launch",
+                                                  requests,n_requests);
 }
 
 
 int spawn_bh_yuan18_feedback(double *mass_spawned_out)
 {
-    int i, n_particles_split = 0, MPI_n_particles_split;
+    int i, n_particles_split = 0, MPI_n_particles_split, n_local_requests=0;
     double mass_spawned = 0, MPI_mass_spawned = 0;
     for(i=FirstActiveParticle; i>=0; i=NextActiveParticle[i])
     {
         if(P[i].Type != 5) {continue;}
-        if(BPP(i).Yuan18_BH_mode_wind != 1) {continue;}
-        int spawn_padding = yuan18_jet_spawn_count(i);
-        if(spawn_padding <= 0) {continue;}
+        int count=yuan18_jet_spawn_count(i);
+#ifdef BH_YUAN18_JET_SPAWN_EVERY_TIMESTEP
+        if(count<=0) {continue;}
+        if(count*yuan18_jet_spawn_particle_mass(i)>P[i].Mass)
+            {yuan18_jet_spawn_deferred(i,"insufficient_bh_mass"); continue;}
+#else
+        if(count<=0 || count*target_mass_for_wind_spawning(i)>P[i].Mass) {continue;}
+#endif
         int nmax = (int)(0.99*All.MaxPart);
         if(All.MaxPart - 20 < nmax) {nmax = All.MaxPart - 20;}
-        if(NumPart + n_particles_split + spawn_padding >= nmax) {continue;}
+        if(NumPart+n_local_requests+count>=nmax)
+        {
+#ifdef BH_YUAN18_JET_SPAWN_EVERY_TIMESTEP
+            yuan18_jet_spawn_deferred(i,"particle_capacity");
+#endif
+            continue;
+        }
+        n_local_requests+=count;
+    }
+    struct yuan18_spawn_template_request *requests=(struct yuan18_spawn_template_request *)
+        malloc(DMAX(n_local_requests,1)*sizeof(struct yuan18_spawn_template_request));
+    if(requests==NULL) {endrun(8912);}
+    int request_offset=0;
+    for(i=FirstActiveParticle; i>=0; i=NextActiveParticle[i])
+    {
+        if(P[i].Type!=5) {continue;}
+        int count=yuan18_jet_spawn_count(i);
+#ifdef BH_YUAN18_JET_SPAWN_EVERY_TIMESTEP
+        if(count<=0 || count*yuan18_jet_spawn_particle_mass(i)>P[i].Mass) {continue;}
+#else
+        if(count<=0 || count*target_mass_for_wind_spawning(i)>P[i].Mass) {continue;}
+#endif
+        int nmax=(int)(0.99*All.MaxPart); if(All.MaxPart-20<nmax) {nmax=All.MaxPart-20;}
+        if(NumPart+request_offset+count>=nmax) {continue;}
+        yuan18_build_jet_spawn_requests_for_bh(i,count,requests,request_offset);
+        request_offset+=count;
+    }
+    if(request_offset!=n_local_requests) {endrun(8913);}
+    yuan18_resolve_spawn_templates(requests,n_local_requests);
+
+    for(i=FirstActiveParticle; i>=0; i=NextActiveParticle[i])
+    {
+        if(P[i].Type!=5 || yuan18_get_resolved_spawn_template(requests,n_local_requests,i,0)==NULL)
+            {continue;}
         double mass_before_spawn = BPP(i).Yuan18_BH_unspawned_jet_mass;
-        int n_spawned_this_bh = blackhole_yuan18_spawn_particle_jet_shell(i, n_particles_split);
+        int n_spawned_this_bh=blackhole_yuan18_spawn_particle_jet_shell(
+            i,n_particles_split,requests,n_local_requests);
         if(n_spawned_this_bh > 0)
           {mass_spawned += mass_before_spawn - BPP(i).Yuan18_BH_unspawned_jet_mass;}
         n_particles_split += n_spawned_this_bh;
     }
+    free(requests);
 
     MPI_Allreduce(&n_particles_split, &MPI_n_particles_split, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(&mass_spawned, &MPI_mass_spawned, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
