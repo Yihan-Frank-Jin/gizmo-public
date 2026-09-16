@@ -434,6 +434,16 @@ long long report_comittable_memory(long long *MemTotal,
 /* task to assess available memory and print it. also returns an estimate of the maximum available memory for an MPI task (assuming equal numbers of tasks per node) */
 double mpi_report_comittable_memory(long long BaseMem, int verbose)
 {
+    /* macOS has no /proc/meminfo. Diagnostic replay launchers may explicitly
+       bypass this advisory-only probe; the default production path is
+       unchanged when the environment variable is absent. */
+    if(getenv("GIZMO_REPLAY_PORTABLE_MEMORY_PROBE") != NULL)
+    {
+        if(verbose && ThisTask == 0)
+            {printf("Skipping the advisory /proc/meminfo probe for this diagnostic replay.\n");}
+        return 0;
+    }
+
     long long *sizelist, maxsize[6], minsize[6], Mem[6];
     int i, imem, mintask[6], maxtask[6];
     double avgsize[6];
@@ -516,4 +526,3 @@ double mpi_report_comittable_memory(long long BaseMem, int verbose)
     double safe_memory_mb_per_mpitask_withbuffer = safe_memory_mb_per_mpitask_nobuffer - All.BufferSize;
     return safe_memory_mb_per_mpitask_withbuffer;
 }
-

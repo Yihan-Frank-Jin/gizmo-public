@@ -355,7 +355,7 @@ void begrun(void)
         All.BAL_internal_temperature = all.BAL_internal_temperature;
         All.BAL_wind_particle_mass = all.BAL_wind_particle_mass; // dangeous to change this, as it is also part of the merger criterion!
 #endif
-#ifdef BH_YUAN18_SPAWN
+#if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
         All.BAL_wind_particle_mass = all.BAL_wind_particle_mass; // dangeous to change this, as it is also part of the merger criterion!
 #endif
 #ifdef BH_PHOTONMOMENTUM
@@ -436,7 +436,8 @@ void begrun(void)
       All.NetworkTempThreshold = all.NetworkTempThreshold;
 #endif
 
-      if(All.TimeMax != all.TimeMax) {readjust_timebase(All.TimeMax, all.TimeMax);}
+      if(All.TimeMax != all.TimeMax || (All.Ti_Current >= TIMEBASE && All.Time < all.TimeMax))
+        {readjust_timebase(All.TimeMax, all.TimeMax);}
     }
 
 #ifdef GALSF_EFFECTIVE_EQS
@@ -604,12 +605,31 @@ void open_outputfiles(void)
   if(ThisTask == 0) {mkdir(All.OutputDir, 02755);}
   MPI_Barrier(MPI_COMM_WORLD);
 
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+  timestep_limiter_diagnostics_open_files(mode);
+#endif
+
 #ifdef BLACK_HOLES /* Note: This is done by everyone [all tasks can write to these log-files], even if it might be empty */
   if(ThisTask == 0) {sprintf(buf, "%sblackhole_details", All.OutputDir); mkdir(buf, 02755);}
   MPI_Barrier(MPI_COMM_WORLD);
 #if !defined(IO_REDUCED_MODE) || defined(BH_OUTPUT_MOREINFO)
   sprintf(buf, "%sblackhole_details/blackhole_details_%d.txt", All.OutputDir, ThisTask);
   if(!(FdBlackHolesDetails = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
+#if defined(BH_OUTPUT_MOREINFO) && defined(BH_YUAN18_ACCRETION) && (defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_WIND_SPAWN) || defined(BH_YUAN18_JET_SPAWN))
+  if(RestartFlag == 0)
+    {
+      fprintf(FdBlackHolesDetails,
+              "# Time ID P_Mass BH_Mass mass_disk BH_Mdot mdot_disk dt Dens u_int Sfr "
+              "Mgas Mstar MgasBulge MstarBulge r0 PosX PosY PosZ VelX VelY VelZ "
+              "JgasX JgasY JgasZ JstarX JstarY JstarZ Bondi_R_Weighted Yuan18_BH_Mdot_Bondi "
+              "reservoir_mass reservoir_v_outflow reservoir_eps_outflow reservoir_mode "
+              "reservoir_Jx reservoir_Jy reservoir_Jz current_v_outflow current_eps_outflow "
+              "current_r_inject current_mode target_outflow_mass n_reservoir_units "
+              "Yuan18_mdot_wind Yuan18_v_wind Yuan18_eps_wind Yuan18_mdot_jet "
+              "Yuan18_v_jet Yuan18_eps_jet Yuan18_L_rad\n");
+      fflush(FdBlackHolesDetails);
+    }
+#endif
 #endif
 #ifdef OUTPUT_SINK_ACCRETION_HIST
   sprintf(buf, "%sblackhole_details/bhswallow_%d.txt", All.OutputDir, ThisTask);
@@ -622,7 +642,7 @@ void open_outputfiles(void)
 #ifdef BH_OUTPUT_MOREINFO
   sprintf(buf, "%sblackhole_details/bhmergers_%d.txt", All.OutputDir, ThisTask);
   if(!(FdBhMergerDetails = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
-#if defined(BH_WIND_KICK) || defined(BH_YUAN18_SPAWN)
+#if defined(BH_WIND_KICK) || defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
   sprintf(buf, "%sblackhole_details/bhwinds_%d.txt", All.OutputDir, ThisTask);
   if(!(FdBhWindDetails = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
 #endif
@@ -633,6 +653,20 @@ void open_outputfiles(void)
 
     sprintf(buf, "%s%s", All.OutputDir, "cpu.txt");
     if(!(FdCPU = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
+
+#ifdef RT_ABSORBING_OUTFLOW_BOUNDARY
+    sprintf(buf, "%s%s", All.OutputDir, "radiation_escape.txt");
+    if(!(FdRTEscape = fopen(buf, mode))) {printf("error in opening file '%s'\n", buf); endrun(1);}
+    if(RestartFlag == 0)
+    {
+      int k_rt;
+      fprintf(FdRTEscape, "# Time BoundaryCellCount");
+      for(k_rt=0; k_rt<N_RT_FREQ_BINS; k_rt++) {fprintf(FdRTEscape, " RadiationEnergy_%d", k_rt);}
+      for(k_rt=0; k_rt<N_RT_FREQ_BINS; k_rt++) {fprintf(FdRTEscape, " EscapedEnergy_%d", k_rt);}
+      fprintf(FdRTEscape, "\n");
+      fflush(FdRTEscape);
+    }
+#endif
 
 #ifndef IO_REDUCED_MODE
     sprintf(buf, "%s%s", All.OutputDir, "timebin.txt");
@@ -896,7 +930,7 @@ void read_parameter_file(char *fname)
       addr[nt] = &All.CpuTimeBetRestartFile;
       id[nt++] = REAL;
 
-#ifdef DEVELOPER_MODE
+#if defined(DEVELOPER_MODE) || defined(RT_ABSORBING_OUTFLOW_BOUNDARY)
       strcpy(tag[nt], "TimeBetStatistics");
       strcpy(alternate_tag[nt], "Time_Between_Internal_Diagnostic_Statistics");
       addr[nt] = &All.TimeBetStatistics;
@@ -1500,7 +1534,7 @@ void read_parameter_file(char *fname)
         id[nt++] = REAL;
 #endif
 #endif
-#ifdef BH_YUAN18_SPAWN
+#if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
         strcpy(tag[nt], "BAL_wind_particle_mass");
         strcpy(alternate_tag[nt], "Cell_Spawn_Mass_ratio");
         addr[nt] = &All.BAL_wind_particle_mass;
@@ -2373,7 +2407,9 @@ void read_parameter_file(char *fname)
     All.ErrTolTheta = 0.7;
     All.ErrTolForceAcc = 0.0025;
     All.MaxRMSDisplacementFac = 0.25;
+#ifndef RT_ABSORBING_OUTFLOW_BOUNDARY
     All.TimeBetStatistics = 1.0e10;
+#endif
     strcpy(All.ResubmitCommand,"none");
     All.ResubmitOn = 0;
 #ifdef HYDRO_SPH
@@ -2424,8 +2460,8 @@ void read_parameter_file(char *fname)
 #ifdef BH_WIND_SPAWN
     All.AGNWindID = 1913298393;       // this seems weird, but is the bitshifted version of 1234568912345 for not long IDs.
 #endif
-#ifdef BH_YUAN18_SPAWN
-    All.AGNWindID = 1913298393;       // matches BH_WIND_SPAWN; tags spawned Yuan18 wind particles with a unique sentinel ID
+#if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
+    All.AGNWindID = 1913298393;       // matches BH_WIND_SPAWN; tags spawned Yuan18 outflow particles with a unique sentinel ID
 #endif
 
 #ifdef GALSF
@@ -2448,9 +2484,10 @@ void read_parameter_file(char *fname)
     if(All.MaxNumNgbDeviation > 0.05) {All.MaxNumNgbDeviation = 0.05;}
 #endif
     
-#if defined(MAGNETIC) || defined(HYDRO_MESHLESS_FINITE_VOLUME) || defined(BH_WIND_SPAWN)
+#if defined(MAGNETIC) || defined(HYDRO_MESHLESS_FINITE_VOLUME) || defined(BH_WIND_SPAWN) || \
+    defined(BH_YUAN18_WIND_SPAWN) || defined(BH_YUAN18_JET_SPAWN)
     if(All.CourantFac > 0.2) {All.CourantFac = 0.2;}
-    /* (PFH) safety factor needed for MHD calc, because people keep using the same CFac as hydro! */
+    /* Use a conservative global Courant factor for MHD/MFV and spawned BH outflows. */
 #endif
 
 #if defined(PIC_MHD) && !defined(GRAIN_FLUID_AND_PIC_BOTH_DEFINED)
@@ -2669,34 +2706,38 @@ int read_outputlist(char *fname)
 }
 
 
-/*! If a restart from restart-files is carried out where the TimeMax variable
- * is increased, then the integer timeline needs to be adjusted. The approach
- * taken here is to reduce the resolution of the integer timeline by factors
- * of 2 until the new final time can be reached within TIMEBASE.
+/*! If a restart from restart-files increases TimeMax, or resumes from an
+ * exhausted integer timeline before the requested physical end time, the
+ * integer timeline needs to be adjusted. The approach taken here is to reduce
+ * its resolution by factors of 2 until the final time fits within TIMEBASE.
  */
 void readjust_timebase(double TimeMax_old, double TimeMax_new)
 {
-  int i; long long ti_end;
+  int i;
+  long double ti_end;
 
   if(sizeof(long long) != 8)
     {if(ThisTask == 0) {printf("\nType 'long long' is not 64 bit on this platform; this will produce segfaults: need to exit.\n\n");} endrun(555);}
 
   if(ThisTask == 0)
     {
-      printf("\n TimeMax (Time_at_End_of_Simulation) has been augmented to be larger in the parameterfile;\n");
+      printf("\n Adjusting the integer timeline to reach TimeMax=%g from the current physical time=%g;\n",
+             TimeMax_new, All.Time);
       printf("  We need to adjust integer timeline, which perturbs all the structure of particle timesteps. Usually this is ok, but with some config flags on, your run will suddently be extremely slow (because the code cannot correctly reorder the timeline). In those cases, restarting from a snapshot is recommended.\n\n");
     }
 
   if(TimeMax_new < TimeMax_old)
     {if(ThisTask == 0) {printf("\n You cannot reduce TimeMax (Time_at_End_of_Simulation) in the parameterfile, in a restart [this breaks the integer timeline]. Simply stop the run when desired, instead. Quitting.\n");} endrun(556);}
 
-  if(All.ComovingIntegrationOn) {ti_end = (long long) (log(TimeMax_new / All.TimeBegin) / All.Timebase_interval);}
-    else {ti_end = (long long) ((TimeMax_new - All.TimeBegin) / All.Timebase_interval);}
+  if(All.ComovingIntegrationOn)
+    {ti_end = logl((long double) TimeMax_new / (long double) All.TimeBegin) / (long double) All.Timebase_interval;}
+  else
+    {ti_end = ((long double) TimeMax_new - (long double) All.TimeBegin) / (long double) All.Timebase_interval;}
 
-  while(ti_end > TIMEBASE)
+  while(ti_end > (long double) TIMEBASE)
   {
       All.Timebase_interval *= 2.0;
-      ti_end /= 2;
+      ti_end /= 2.0L;
       All.Ti_Current /= 2;
 #ifdef PMGRID
       All.PM_Ti_begstep /= 2;

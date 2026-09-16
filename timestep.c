@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <float.h>
+#include <sys/stat.h>
 #include "allvars.h"
 #include "proto.h"
 #include "kernel.h"
@@ -21,6 +23,332 @@
 static double dt_displacement = 0;
 
 
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+enum timestep_limiter_criterion_bits
+{
+    TIMESTEP_DIAG_CRIT_MAXIMUM = 1 << 0,
+    TIMESTEP_DIAG_CRIT_ACCELERATION = 1 << 1,
+    TIMESTEP_DIAG_CRIT_COURANT = 1 << 2,
+    TIMESTEP_DIAG_CRIT_DIVERGENCE = 1 << 3,
+    TIMESTEP_DIAG_CRIT_BH_ACCRETION = 1 << 4,
+    TIMESTEP_DIAG_CRIT_BH_NEIGHBOR = 1 << 5,
+    TIMESTEP_DIAG_CRIT_DISPLACEMENT = 1 << 6,
+    TIMESTEP_DIAG_CRIT_MINIMUM_FLOOR = 1 << 7
+};
+
+struct timestep_limiter_raw_diagnostic
+{
+    int valid, particle_index, courant_spawn_modifier;
+    unsigned int executed_mask, winner_mask;
+    double maximum, acceleration, courant, divergence, bh_accretion, bh_neighbor;
+    double displacement, minimum_floor, desired_before_global_caps, desired_final;
+    double acceleration_magnitude, force_softening, particle_size, max_signal_velocity;
+    double velocity_divergence, bh_mass, bh_mdot;
+    integertime desired_integer;
+};
+
+static struct timestep_limiter_raw_diagnostic TimestepLimiterRawDiagnostic;
+static FILE *FdTimestepLimiterAssignments = NULL;
+static FILE *FdTimestepLimiterSync = NULL;
+static FILE *FdTimestepLimiterSchedule = NULL;
+static FILE *FdTimestepLimiterWakeups = NULL;
+static FILE *FdTimestepLimiterSpawns = NULL;
+static double TimestepLimiterDiagnosticTimeMin = -MAX_REAL_NUMBER;
+static double TimestepLimiterDiagnosticTimeMax = MAX_REAL_NUMBER;
+static const char *TimestepLimiterDiagnosticBuildHash = "UNRECORDED";
+static const char *TimestepLimiterDiagnosticConfigHash = "UNRECORDED";
+
+static int timestep_limiter_diagnostics_time_is_active(void)
+{
+    return (FdTimestepLimiterAssignments != NULL && All.Time >= TimestepLimiterDiagnosticTimeMin &&
+            All.Time <= TimestepLimiterDiagnosticTimeMax);
+}
+
+static void timestep_limiter_diagnostics_write_header_if_empty(FILE *fd, const char *header)
+{
+    fseek(fd, 0, SEEK_END);
+    if(ftell(fd) == 0)
+    {
+        fprintf(fd,
+                "# schema_version=1 rank=%d ntask=%d restart_flag=%d build_sha256=%s config_sha256=%s\n"
+                "# time_begin=%.17g time_max=%.17g timebase_interval=%.17g unit_length_cm=%.17g "
+                "unit_velocity_cm_per_s=%.17g capture_time_min=%.17g capture_time_max=%.17g\n%s\n",
+                ThisTask, NTask, RestartFlag, TimestepLimiterDiagnosticBuildHash,
+                TimestepLimiterDiagnosticConfigHash, All.TimeBegin, All.TimeMax,
+                All.Timebase_interval, All.UnitLength_in_cm, All.UnitVelocity_in_cm_per_s,
+                TimestepLimiterDiagnosticTimeMin, TimestepLimiterDiagnosticTimeMax, header);
+        fflush(fd);
+    }
+}
+
+void timestep_limiter_diagnostics_open_files(char *mode)
+{
+    char dirname[1000], filename[1200];
+    const char *time_min_string = getenv("GIZMO_TIMESTEP_DIAG_TIME_MIN");
+    const char *time_max_string = getenv("GIZMO_TIMESTEP_DIAG_TIME_MAX");
+    const char *build_hash_string = getenv("GIZMO_TIMESTEP_DIAG_BUILD_HASH");
+    const char *config_hash_string = getenv("GIZMO_TIMESTEP_DIAG_CONFIG_HASH");
+    if(time_min_string != NULL) {TimestepLimiterDiagnosticTimeMin = strtod(time_min_string, NULL);}
+    if(time_max_string != NULL) {TimestepLimiterDiagnosticTimeMax = strtod(time_max_string, NULL);}
+    if(build_hash_string != NULL) {TimestepLimiterDiagnosticBuildHash = build_hash_string;}
+    if(config_hash_string != NULL) {TimestepLimiterDiagnosticConfigHash = config_hash_string;}
+    if(TimestepLimiterDiagnosticTimeMax < TimestepLimiterDiagnosticTimeMin)
+        {terminate("GIZMO_TIMESTEP_DIAG_TIME_MAX is smaller than GIZMO_TIMESTEP_DIAG_TIME_MIN");}
+
+    sprintf(dirname, "%stimestep_limiter_diagnostics", All.OutputDir);
+    if(ThisTask == 0) {mkdir(dirname, 02755);}
+    MPI_Barrier(MPI_COMM_WORLD);
+
+#define OPEN_TIMESTEP_DIAGNOSTIC_FILE(handle, stem) do { \
+    sprintf(filename, "%s/%s_rank%03d.tsv", dirname, stem, ThisTask); \
+    if(!((handle) = fopen(filename, mode))) {printf("error in opening file '%s'\n", filename); endrun(1);} \
+} while(0)
+    OPEN_TIMESTEP_DIAGNOSTIC_FILE(FdTimestepLimiterAssignments, "assignments");
+    OPEN_TIMESTEP_DIAGNOSTIC_FILE(FdTimestepLimiterSync, "sync");
+    OPEN_TIMESTEP_DIAGNOSTIC_FILE(FdTimestepLimiterSchedule, "schedule_candidates");
+    OPEN_TIMESTEP_DIAGNOSTIC_FILE(FdTimestepLimiterWakeups, "wakeups");
+    OPEN_TIMESTEP_DIAGNOSTIC_FILE(FdTimestepLimiterSpawns, "spawns");
+#undef OPEN_TIMESTEP_DIAGNOSTIC_FILE
+
+    timestep_limiter_diagnostics_write_header_if_empty(
+        FdTimestepLimiterAssignments,
+        "sync_index\ttime_code\tti_current\trank\tparticle_type\tparticle_id\tchild_id\tgeneration_id\tlocal_index\texecuted_mask\twinner_mask\tcourant_spawn_modifier\tdt_maximum\tdt_acceleration\tdt_courant\tdt_divergence\tdt_bh_accretion\tdt_bh_neighbor\tdt_displacement\tdt_minimum_floor\tdt_before_global_caps\tdt_desired_final\tdesired_integer\tdilation_factor\tinteger_after_dilation\trounded_integer\told_bin\tproposed_bin\tfinal_bin\tsync_cap_applied\told_ti_begstep\told_dt_step\tnew_ti_begstep\tnew_dt_step\tnext_kick\tacceleration_magnitude\tforce_softening\tparticle_size\tmax_signal_velocity\tvelocity_divergence\tbh_mass\tbh_mdot");
+    timestep_limiter_diagnostics_write_header_if_empty(
+        FdTimestepLimiterSync,
+        "sync_index\ttime_code\tti_current\trank\tlocal_min_next_kick\tlocal_systemstep_integer\tlowest_local_bin\tsecond_lowest_local_bin\tlocal_min_candidate_count\tlowest_local_bin_count\tsecond_lowest_local_bin_count");
+    timestep_limiter_diagnostics_write_header_if_empty(
+        FdTimestepLimiterSchedule,
+        "sync_index\ttime_code\tti_current\trank\tselection_mask\tparticle_type\tparticle_id\tchild_id\tgeneration_id\tlocal_index\ttime_bin\tdt_step\tti_begstep\tnext_kick\tmass\tpos_x\tpos_y\tpos_z\tvel_x\tvel_y\tvel_z\tdensity\tinternal_energy\thsml\tgrav_accel_x\tgrav_accel_y\tgrav_accel_z\thydro_accel_x\thydro_accel_y\thydro_accel_z\tmax_signal_velocity\tvelocity_divergence\tbh_mass\tbh_mdot");
+    timestep_limiter_diagnostics_write_header_if_empty(
+        FdTimestepLimiterWakeups,
+        "sync_index\ttime_code\tti_current\trank\tevent\treason\trequester_type\trequester_id\trequester_child_id\trequester_generation_id\ttarget_type\ttarget_id\ttarget_child_id\ttarget_generation_id\ttarget_local_index\told_bin\tnew_bin\told_dt_step\tnew_dt_step\tforced_next_sync\tsignal_velocity\tprevious_max_signal_velocity");
+    timestep_limiter_diagnostics_write_header_if_empty(
+        FdTimestepLimiterSpawns,
+        "sync_index\ttime_code\tti_current\trank\tspawn_path\tparent_type\tparent_id\tparent_child_id\tparent_generation_id\tchild_type\tchild_id\tchild_child_id\tchild_generation_id\tchild_local_index\ttime_bin\tdt_step\tti_begstep\tnext_kick\tmass\tpos_x\tpos_y\tpos_z\tvel_x\tvel_y\tvel_z");
+
+    sprintf(filename, "%s/metadata_rank%03d.txt", dirname, ThisTask);
+    FILE *metadata = fopen(filename, mode);
+    if(metadata == NULL) {printf("error in opening file '%s'\n", filename); endrun(1);}
+    fprintf(metadata,
+            "schema_version=1\nrank=%d\nntask=%d\nrestart_flag=%d\nbuild_sha256=%s\nconfig_sha256=%s\n"
+            "time_begin=%.17g\ntime_max=%.17g\ntimebase_interval=%.17g\nunit_length_cm=%.17g\n"
+            "unit_velocity_cm_per_s=%.17g\ncapture_time_min=%.17g\ncapture_time_max=%.17g\n"
+            "criterion_bits=max:1,acceleration:2,courant:4,divergence:8,bh_accretion:16,bh_neighbor:32,displacement:64,minimum_floor:128\n",
+            ThisTask, NTask, RestartFlag, TimestepLimiterDiagnosticBuildHash,
+            TimestepLimiterDiagnosticConfigHash, All.TimeBegin, All.TimeMax, All.Timebase_interval,
+            All.UnitLength_in_cm, All.UnitVelocity_in_cm_per_s,
+            TimestepLimiterDiagnosticTimeMin, TimestepLimiterDiagnosticTimeMax);
+    fclose(metadata);
+}
+
+static void timestep_limiter_diagnostics_begin_raw(int p)
+{
+    memset(&TimestepLimiterRawDiagnostic, 0, sizeof(TimestepLimiterRawDiagnostic));
+    TimestepLimiterRawDiagnostic.valid = timestep_limiter_diagnostics_time_is_active();
+    TimestepLimiterRawDiagnostic.particle_index = p;
+    TimestepLimiterRawDiagnostic.maximum = All.MaxSizeTimestep;
+    TimestepLimiterRawDiagnostic.acceleration = NAN;
+    TimestepLimiterRawDiagnostic.courant = NAN;
+    TimestepLimiterRawDiagnostic.divergence = NAN;
+    TimestepLimiterRawDiagnostic.bh_accretion = NAN;
+    TimestepLimiterRawDiagnostic.bh_neighbor = NAN;
+    TimestepLimiterRawDiagnostic.displacement = NAN;
+    TimestepLimiterRawDiagnostic.minimum_floor = NAN;
+    TimestepLimiterRawDiagnostic.desired_before_global_caps = NAN;
+    TimestepLimiterRawDiagnostic.desired_final = NAN;
+    TimestepLimiterRawDiagnostic.acceleration_magnitude = NAN;
+    TimestepLimiterRawDiagnostic.force_softening = NAN;
+    TimestepLimiterRawDiagnostic.particle_size = NAN;
+    TimestepLimiterRawDiagnostic.max_signal_velocity = NAN;
+    TimestepLimiterRawDiagnostic.velocity_divergence = NAN;
+    TimestepLimiterRawDiagnostic.bh_mass = NAN;
+    TimestepLimiterRawDiagnostic.bh_mdot = NAN;
+    if(TimestepLimiterRawDiagnostic.valid)
+        {TimestepLimiterRawDiagnostic.executed_mask |= TIMESTEP_DIAG_CRIT_MAXIMUM;}
+}
+
+static void timestep_limiter_diagnostics_record_candidate(unsigned int bit, double *slot, double value)
+{
+    if(!TimestepLimiterRawDiagnostic.valid) {return;}
+    *slot = value;
+    TimestepLimiterRawDiagnostic.executed_mask |= bit;
+}
+
+static int timestep_limiter_diagnostics_values_tie(double value, double reference)
+{
+    if(!isfinite(value) || !isfinite(reference)) {return 0;}
+    return fabs(value-reference) <= 64.0*DBL_EPSILON*DMAX(fabs(reference), MIN_REAL_NUMBER);
+}
+
+static void timestep_limiter_diagnostics_finish_raw(double desired_final, integertime desired_integer)
+{
+    struct timestep_limiter_raw_diagnostic *d = &TimestepLimiterRawDiagnostic;
+    if(!d->valid) {return;}
+    d->desired_final = desired_final;
+    d->desired_integer = desired_integer;
+    if((d->executed_mask & TIMESTEP_DIAG_CRIT_MAXIMUM) && timestep_limiter_diagnostics_values_tie(d->maximum, desired_final)) {d->winner_mask |= TIMESTEP_DIAG_CRIT_MAXIMUM;}
+    if((d->executed_mask & TIMESTEP_DIAG_CRIT_ACCELERATION) && timestep_limiter_diagnostics_values_tie(d->acceleration, desired_final)) {d->winner_mask |= TIMESTEP_DIAG_CRIT_ACCELERATION;}
+    if((d->executed_mask & TIMESTEP_DIAG_CRIT_COURANT) && timestep_limiter_diagnostics_values_tie(d->courant, desired_final)) {d->winner_mask |= TIMESTEP_DIAG_CRIT_COURANT;}
+    if((d->executed_mask & TIMESTEP_DIAG_CRIT_DIVERGENCE) && timestep_limiter_diagnostics_values_tie(d->divergence, desired_final)) {d->winner_mask |= TIMESTEP_DIAG_CRIT_DIVERGENCE;}
+    if((d->executed_mask & TIMESTEP_DIAG_CRIT_BH_ACCRETION) && timestep_limiter_diagnostics_values_tie(d->bh_accretion, desired_final)) {d->winner_mask |= TIMESTEP_DIAG_CRIT_BH_ACCRETION;}
+    if((d->executed_mask & TIMESTEP_DIAG_CRIT_BH_NEIGHBOR) && timestep_limiter_diagnostics_values_tie(d->bh_neighbor, desired_final)) {d->winner_mask |= TIMESTEP_DIAG_CRIT_BH_NEIGHBOR;}
+    if((d->executed_mask & TIMESTEP_DIAG_CRIT_DISPLACEMENT) && timestep_limiter_diagnostics_values_tie(d->displacement, desired_final)) {d->winner_mask |= TIMESTEP_DIAG_CRIT_DISPLACEMENT;}
+    if((d->executed_mask & TIMESTEP_DIAG_CRIT_MINIMUM_FLOOR) && timestep_limiter_diagnostics_values_tie(d->minimum_floor, desired_final)) {d->winner_mask |= TIMESTEP_DIAG_CRIT_MINIMUM_FLOOR;}
+}
+
+static void timestep_limiter_diagnostics_write_assignment(int i, integertime integer_before_dilation,
+                                                           double dilation_factor,
+                                                           integertime integer_after_dilation,
+                                                           integertime rounded_integer,
+                                                           int old_bin, int proposed_bin, int final_bin,
+                                                           integertime old_ti_begstep,
+                                                           integertime old_dt_step)
+{
+    struct timestep_limiter_raw_diagnostic *d = &TimestepLimiterRawDiagnostic;
+    if(!timestep_limiter_diagnostics_time_is_active() || !d->valid || d->particle_index != i) {return;}
+    fprintf(FdTimestepLimiterAssignments,
+            "%lld\t%.17g\t%lld\t%d\t%d\t%llu\t%llu\t%llu\t%d\t%u\t%u\t%d\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%lld\t%.17g\t%lld\t%lld\t%d\t%d\t%d\t%d\t%lld\t%lld\t%lld\t%lld\t%lld\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\n",
+            (long long)All.NumCurrentTiStep, All.Time, (long long)All.Ti_Current, ThisTask,
+            P[i].Type, (unsigned long long)P[i].ID, (unsigned long long)P[i].ID_child_number,
+            (unsigned long long)P[i].ID_generation, i, d->executed_mask, d->winner_mask,
+            d->courant_spawn_modifier, d->maximum, d->acceleration, d->courant, d->divergence,
+            d->bh_accretion, d->bh_neighbor, d->displacement, d->minimum_floor,
+            d->desired_before_global_caps, d->desired_final, (long long)integer_before_dilation,
+            dilation_factor, (long long)integer_after_dilation, (long long)rounded_integer,
+            old_bin, proposed_bin, final_bin, proposed_bin != final_bin,
+            (long long)old_ti_begstep, (long long)old_dt_step, (long long)P[i].Ti_begstep,
+            (long long)P[i].dt_step, (long long)(P[i].Ti_begstep + P[i].dt_step),
+            d->acceleration_magnitude, d->force_softening, d->particle_size,
+            d->max_signal_velocity, d->velocity_divergence, d->bh_mass, d->bh_mdot);
+}
+
+void timestep_limiter_diagnostics_record_wakeup_request(int target, int requester_type,
+                                                        MyIDType requester_id,
+                                                        MyIDType requester_child_id,
+                                                        MyIDType requester_generation_id,
+                                                        double signal_velocity,
+                                                        double previous_max_signal_velocity,
+                                                        const char *reason)
+{
+    if(!timestep_limiter_diagnostics_time_is_active()) {return;}
+    fprintf(FdTimestepLimiterWakeups,
+            "%lld\t%.17g\t%lld\t%d\trequest\t%s\t%d\t%llu\t%llu\t%llu\t%d\t%llu\t%llu\t%llu\t%d\t%d\t%d\t%lld\t%lld\t0\t%.17g\t%.17g\n",
+            (long long)All.NumCurrentTiStep, All.Time, (long long)All.Ti_Current, ThisTask, reason,
+            requester_type, (unsigned long long)requester_id, (unsigned long long)requester_child_id,
+            (unsigned long long)requester_generation_id, P[target].Type,
+            (unsigned long long)P[target].ID, (unsigned long long)P[target].ID_child_number,
+            (unsigned long long)P[target].ID_generation, target, P[target].TimeBin,
+            P[target].TimeBin, (long long)P[target].dt_step, (long long)P[target].dt_step,
+            signal_velocity, previous_max_signal_velocity);
+}
+
+static void timestep_limiter_diagnostics_record_wakeup_outcome(int target, int old_bin, int new_bin,
+                                                                integertime old_dt_step,
+                                                                integertime new_dt_step, int applied,
+                                                                int forced_next_sync,
+                                                                const char *reason)
+{
+    if(!timestep_limiter_diagnostics_time_is_active()) {return;}
+    fprintf(FdTimestepLimiterWakeups,
+            "%lld\t%.17g\t%lld\t%d\t%s\t%s\t-1\t0\t0\t0\t%d\t%llu\t%llu\t%llu\t%d\t%d\t%d\t%lld\t%lld\t%d\tnan\tnan\n",
+            (long long)All.NumCurrentTiStep, All.Time, (long long)All.Ti_Current, ThisTask,
+            applied ? "applied" : "rejected", reason, P[target].Type,
+            (unsigned long long)P[target].ID, (unsigned long long)P[target].ID_child_number,
+            (unsigned long long)P[target].ID_generation, target, old_bin, new_bin,
+            (long long)old_dt_step, (long long)new_dt_step, forced_next_sync);
+}
+
+void timestep_limiter_diagnostics_record_spawn(int parent, int child,
+                                                MyIDType parent_generation_before_spawn,
+                                                const char *spawn_path)
+{
+    if(!timestep_limiter_diagnostics_time_is_active()) {return;}
+    fprintf(FdTimestepLimiterSpawns,
+            "%lld\t%.17g\t%lld\t%d\t%s\t%d\t%llu\t%llu\t%llu\t%d\t%llu\t%llu\t%llu\t%d\t%d\t%lld\t%lld\t%lld\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\n",
+            (long long)All.NumCurrentTiStep, All.Time, (long long)All.Ti_Current, ThisTask,
+            spawn_path, P[parent].Type, (unsigned long long)P[parent].ID,
+            (unsigned long long)P[parent].ID_child_number,
+            (unsigned long long)parent_generation_before_spawn,
+            P[child].Type, (unsigned long long)P[child].ID,
+            (unsigned long long)P[child].ID_child_number, (unsigned long long)P[child].ID_generation,
+            child, P[child].TimeBin, (long long)P[child].dt_step,
+            (long long)P[child].Ti_begstep, (long long)(P[child].Ti_begstep + P[child].dt_step),
+            P[child].Mass, P[child].Pos[0], P[child].Pos[1], P[child].Pos[2],
+            P[child].Vel[0], P[child].Vel[1], P[child].Vel[2]);
+}
+
+static integertime timestep_limiter_diagnostics_next_kick_for_bin(int bin)
+{
+    integertime dt_bin;
+    if(bin <= 0) {return All.Ti_Current;}
+    dt_bin = GET_INTEGERTIME_FROM_TIMEBIN(bin);
+    return (All.Ti_Current / dt_bin) * dt_bin + dt_bin;
+}
+
+static void timestep_limiter_diagnostics_record_sync_candidates(void)
+{
+    int bin, i, lowest=-1, second=-1, local_min_count=0;
+    integertime local_min_next_kick=TIMEBASE;
+    if(!timestep_limiter_diagnostics_time_is_active()) {return;}
+    for(bin=0; bin<TIMEBINS; bin++)
+    {
+        if(TimeBinCount[bin] <= 0) {continue;}
+        if(lowest < 0) {lowest=bin;} else if(second < 0) {second=bin;}
+        integertime next_kick=timestep_limiter_diagnostics_next_kick_for_bin(bin);
+        if(next_kick < local_min_next_kick) {local_min_next_kick=next_kick; local_min_count=TimeBinCount[bin];}
+        else if(next_kick == local_min_next_kick) {local_min_count += TimeBinCount[bin];}
+    }
+    fprintf(FdTimestepLimiterSync, "%lld\t%.17g\t%lld\t%d\t%lld\t%lld\t%d\t%d\t%d\t%d\t%d\n",
+            (long long)All.NumCurrentTiStep, All.Time, (long long)All.Ti_Current, ThisTask,
+            (long long)local_min_next_kick, (long long)(local_min_next_kick-All.Ti_Current),
+            lowest, second, local_min_count, lowest>=0 ? TimeBinCount[lowest] : 0,
+            second>=0 ? TimeBinCount[second] : 0);
+    for(bin=0; bin<TIMEBINS; bin++)
+    {
+        if(TimeBinCount[bin] <= 0) {continue;}
+        integertime next_kick=timestep_limiter_diagnostics_next_kick_for_bin(bin);
+        int selection_mask=0;
+        if(next_kick == local_min_next_kick) {selection_mask |= 1;}
+        if(bin == lowest) {selection_mask |= 2;}
+        if(bin == second) {selection_mask |= 4;}
+        if(selection_mask == 0) {continue;}
+        for(i=FirstInTimeBin[bin]; i>=0; i=NextInTimeBin[i])
+        {
+            double density=NAN, internal_energy=NAN, max_signal_velocity=NAN;
+            double hydro_accel[3]={NAN,NAN,NAN}, bh_mass=NAN, bh_mdot=NAN;
+            if(P[i].Type == 0)
+            {
+                density=SphP[i].Density; internal_energy=SphP[i].InternalEnergy;
+                max_signal_velocity=SphP[i].MaxSignalVel;
+                hydro_accel[0]=SphP[i].HydroAccel[0];
+                hydro_accel[1]=SphP[i].HydroAccel[1];
+                hydro_accel[2]=SphP[i].HydroAccel[2];
+            }
+#ifdef BLACK_HOLES
+            if(P[i].Type == 5) {bh_mass=BPP(i).BH_Mass; bh_mdot=BPP(i).BH_Mdot;}
+#endif
+            fprintf(FdTimestepLimiterSchedule,
+                    "%lld\t%.17g\t%lld\t%d\t%d\t%d\t%llu\t%llu\t%llu\t%d\t%d\t%lld\t%lld\t%lld"
+                    "\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g"
+                    "\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\n",
+                    (long long)All.NumCurrentTiStep, All.Time, (long long)All.Ti_Current, ThisTask,
+                    selection_mask, P[i].Type, (unsigned long long)P[i].ID,
+                    (unsigned long long)P[i].ID_child_number, (unsigned long long)P[i].ID_generation,
+                    i, P[i].TimeBin, (long long)P[i].dt_step, (long long)P[i].Ti_begstep,
+                    (long long)(P[i].Ti_begstep+P[i].dt_step), P[i].Mass,
+                    P[i].Pos[0], P[i].Pos[1], P[i].Pos[2],
+                    P[i].Vel[0], P[i].Vel[1], P[i].Vel[2], density, internal_energy, PPP[i].Hsml,
+                    P[i].GravAccel[0], P[i].GravAccel[1], P[i].GravAccel[2],
+                    hydro_accel[0], hydro_accel[1], hydro_accel[2], max_signal_velocity,
+                    P[i].Particle_DivVel*All.cf_a2inv, bh_mass, bh_mdot);
+        }
+    }
+    fflush(FdTimestepLimiterAssignments); fflush(FdTimestepLimiterSync);
+    fflush(FdTimestepLimiterSchedule); fflush(FdTimestepLimiterWakeups); fflush(FdTimestepLimiterSpawns);
+}
+#endif
+
+
 /*! This function advances the system in momentum space, i.e. it does apply the 'kick' operation after the
  *  forces have been computed. Additionally, it assigns new timesteps to particles. At start-up, a
  *  half-timestep is carried out, as well as at the end of the simulation. In between, the half-step kick that
@@ -33,6 +361,12 @@ void find_timesteps(void)
     int i, bin, binold, prev, next;
     integertime ti_step, ti_step_old, ti_min, ti_stepmax, ti_max;
     double aphys;
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+    integertime diagnostic_integer_before_dilation, diagnostic_integer_after_dilation;
+    integertime diagnostic_rounded_integer, diagnostic_old_ti_begstep, diagnostic_old_dt_step;
+    int diagnostic_proposed_bin;
+    double diagnostic_dilation_factor;
+#endif
 #ifdef SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM
     int special_particle_active_with_this_index[SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM], j_specialpartical_counter=0;
     double xyz_local[SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM][3], xyz_global[SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM][3], special_particle_mass_local[SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM]={0}, special_particle_mass_global[SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM]={0};
@@ -113,7 +447,14 @@ void find_timesteps(void)
 #else
         ti_step = get_timestep(i, &aphys, 0);
 #endif
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+        diagnostic_integer_before_dilation = ti_step;
+        diagnostic_dilation_factor = TIMESTEP_DILATION_FACTOR(i,0);
+        ti_step = (integertime)(((double)ti_step) / diagnostic_dilation_factor);
+        diagnostic_integer_after_dilation = ti_step;
+#else
         ti_step = (integertime)(((double)ti_step) / TIMESTEP_DILATION_FACTOR(i,0));
+#endif
         
 #if defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM)
         if(ti_step < 0) {ti_step = ti_min_glob;}
@@ -127,7 +468,19 @@ void find_timesteps(void)
         ti_min = TIMEBASE;
         while(ti_min > ti_step) {ti_min >>= 1;}
         ti_step = ti_min;
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+        diagnostic_rounded_integer = ti_step;
+#endif
         bin = get_timestep_bin(ti_step);
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+        diagnostic_proposed_bin = bin;
+        diagnostic_old_ti_begstep = P[i].Ti_begstep;
+#ifdef WAKEUP
+        diagnostic_old_dt_step = P[i].dt_step;
+#else
+        diagnostic_old_dt_step = GET_INTEGERTIME_FROM_TIMEBIN(P[i].TimeBin);
+#endif
+#endif
         binold = P[i].TimeBin;
         if(bin > binold)		/* timestep wants to increase */
         {
@@ -204,6 +557,15 @@ void find_timesteps(void)
 #if defined(WAKEUP)
         P[i].dt_step = ti_step;
 #endif
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+        timestep_limiter_diagnostics_write_assignment(i, diagnostic_integer_before_dilation,
+                                                       diagnostic_dilation_factor,
+                                                       diagnostic_integer_after_dilation,
+                                                       diagnostic_rounded_integer, binold,
+                                                       diagnostic_proposed_bin, bin,
+                                                       diagnostic_old_ti_begstep,
+                                                       diagnostic_old_dt_step);
+#endif
 #ifdef BH_INTERACT_ON_GAS_TIMESTEP
         if(P[i].Type == 5){
             if(All.Ti_Current == 0) { // first timestep
@@ -265,6 +627,10 @@ void find_timesteps(void)
     process_wake_ups();
 #endif
 
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+    timestep_limiter_diagnostics_record_sync_candidates();
+#endif
+
     CPU_Step[CPU_TIMELINE] += measure_time();
 }
 
@@ -286,6 +652,9 @@ integertime get_timestep(int p,		/*!< particle index */
 
 #ifdef IO_GRADUAL_SNAPSHOT_RESTART // if on the first timestep of a snapshot restart, start at the lowest allowed timestep to minimize any transient effects
     if(RestartFlag == 2 && All.Ti_Current == 0) {return 2;}
+#endif
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+    if(flag == 0) {timestep_limiter_diagnostics_begin_raw(p);}
 #endif
 #if (SINGLE_STAR_TIMESTEPPING > 0)
     P[p].SuperTimestepFlag = 0;
@@ -383,6 +752,25 @@ integertime get_timestep(int p,		/*!< particle index */
         return flag;
     }
     dt = sqrt(2 * All.ErrTolIntAccuracy * All.cf_atime * KERNEL_CORE_SIZE * ForceSoftening_KernelRadius(p) / ac);
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+    if(TimestepLimiterRawDiagnostic.valid)
+    {
+        timestep_limiter_diagnostics_record_candidate(TIMESTEP_DIAG_CRIT_ACCELERATION,
+                                                       &TimestepLimiterRawDiagnostic.acceleration, dt);
+        TimestepLimiterRawDiagnostic.acceleration_magnitude = ac;
+        TimestepLimiterRawDiagnostic.force_softening = ForceSoftening_KernelRadius(p);
+        TimestepLimiterRawDiagnostic.particle_size = Get_Particle_Size(p);
+        TimestepLimiterRawDiagnostic.velocity_divergence = P[p].Particle_DivVel*All.cf_a2inv;
+        if(P[p].Type == 0) {TimestepLimiterRawDiagnostic.max_signal_velocity = SphP[p].MaxSignalVel;}
+#ifdef BLACK_HOLES
+        if(P[p].Type == 5)
+        {
+            TimestepLimiterRawDiagnostic.bh_mass = BPP(p).BH_Mass;
+            TimestepLimiterRawDiagnostic.bh_mdot = BPP(p).BH_Mdot;
+        }
+#endif
+    }
+#endif
 
 #if (defined(ADAPTIVE_GRAVSOFT_FORGAS) || defined(ADAPTIVE_GRAVSOFT_FORALL)) && defined(GALSF) && defined(GALSF_FB_MECHANICAL)
     if(((P[p].Type == 4)||((All.ComovingIntegrationOn==0)&&((P[p].Type == 2)||(P[p].Type==3))))&&(P[p].Mass>0))
@@ -537,9 +925,18 @@ integertime get_timestep(int p,		/*!< particle index */
             csnd = 0.5 * SphP[p].MaxSignalVel * All.cf_afac3;
             double L_particle = Get_Particle_Size(p);
             dt_courant = All.CourantFac * (L_particle*All.cf_atime) / csnd;
-#ifdef BH_WIND_SPAWN
-	    if(P[p].ID == All.AGNWindID){dt_courant *= 0.5;} // be more careful if this is a spawned-in gas cell
+#if defined(BH_WIND_SPAWN) || defined(BH_YUAN18_WIND_SPAWN) || defined(BH_YUAN18_JET_SPAWN)
+		    if(P[p].ID == All.AGNWindID){dt_courant *= 0.5;
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+                if(TimestepLimiterRawDiagnostic.valid) {TimestepLimiterRawDiagnostic.courant_spawn_modifier = 1;}
+#endif
+            } // be more careful if this is a spawned-in gas cell
 #endif			    
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+            timestep_limiter_diagnostics_record_candidate(TIMESTEP_DIAG_CRIT_COURANT,
+                                                           &TimestepLimiterRawDiagnostic.courant,
+                                                           dt_courant);
+#endif
             if(dt_courant < dt) dt = dt_courant;
 
             double dt_prefac_diffusion;
@@ -818,6 +1215,11 @@ integertime get_timestep(int p,		/*!< particle index */
             if(divVel != 0)
             {
                 dt_divv = 1.5 / fabs(All.cf_a2inv * divVel);
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+                timestep_limiter_diagnostics_record_candidate(TIMESTEP_DIAG_CRIT_DIVERGENCE,
+                                                               &TimestepLimiterRawDiagnostic.divergence,
+                                                               dt_divv);
+#endif
                 if(dt_divv < dt) {dt = dt_divv;}
             }
 
@@ -993,9 +1395,21 @@ integertime get_timestep(int p,		/*!< particle index */
 #endif
         if(dt_accr > dt_evol) {dt_accr=dt_evol;}
 #endif
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+        if(dt_accr > 0)
+            {timestep_limiter_diagnostics_record_candidate(TIMESTEP_DIAG_CRIT_BH_ACCRETION,
+                                                            &TimestepLimiterRawDiagnostic.bh_accretion,
+                                                            dt_accr);}
+#endif
         if(dt_accr > 0 && dt_accr < dt) {dt = dt_accr;}
 
         double dt_ngbs = 4.1 * GET_PHYSICAL_TIMESTEP_FROM_TIMEBIN(BPP(p).BH_TimeBinGasNeighbor,p); /* standard wakeup-type threshold: use this by default here, unless dynamical interaction important (e.g. back-rx term from oscillation of BH c-o-m, which is important for single-sink sims */
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+        if(dt_ngbs > 0)
+            {timestep_limiter_diagnostics_record_candidate(TIMESTEP_DIAG_CRIT_BH_NEIGHBOR,
+                                                            &TimestepLimiterRawDiagnostic.bh_neighbor,
+                                                            1.01*dt_ngbs);}
+#endif
         if(dt > dt_ngbs && dt_ngbs > 0) {dt = 1.01 * dt_ngbs; }
 
 #if defined(SINGLE_STAR_TIMESTEPPING)
@@ -1039,6 +1453,9 @@ integertime get_timestep(int p,		/*!< particle index */
 
     /* convert the physical timestep to dloga if needed. Note: If comoving integration has not been selected, All.cf_hubble_a=1. */
     dt *= All.cf_hubble_a;
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+    if(TimestepLimiterRawDiagnostic.valid) {TimestepLimiterRawDiagnostic.desired_before_global_caps = dt;}
+#endif
 
 #ifdef ONLY_PM
     dt = All.MaxSizeTimestep;
@@ -1046,6 +1463,11 @@ integertime get_timestep(int p,		/*!< particle index */
 
     if(dt >= All.MaxSizeTimestep) {dt = All.MaxSizeTimestep;}
 
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+    timestep_limiter_diagnostics_record_candidate(TIMESTEP_DIAG_CRIT_DISPLACEMENT,
+                                                   &TimestepLimiterRawDiagnostic.displacement,
+                                                   dt_displacement);
+#endif
     if(dt >= dt_displacement) {dt = dt_displacement;}
 
     if((dt < All.MinSizeTimestep)||(((integertime) (dt / All.Timebase_interval)) <= 1))
@@ -1083,6 +1505,11 @@ integertime get_timestep(int p,		/*!< particle index */
         endrun(888);
 #endif
         dt = All.MinSizeTimestep;
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+        timestep_limiter_diagnostics_record_candidate(TIMESTEP_DIAG_CRIT_MINIMUM_FLOOR,
+                                                       &TimestepLimiterRawDiagnostic.minimum_floor,
+                                                       All.MinSizeTimestep);
+#endif
     }
 
     ti_step = (integertime) (dt / All.Timebase_interval);
@@ -1102,6 +1529,9 @@ integertime get_timestep(int p,		/*!< particle index */
         fflush(stdout); endrun(818);
     }
 
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+    timestep_limiter_diagnostics_finish_raw(dt, ti_step);
+#endif
     return ti_step;
 }
 
@@ -1276,11 +1706,36 @@ void process_wake_ups(void)
 	{
 	    if(!PPPZ[i].wakeup) {continue;}
 #if !defined(AGS_HSML_CALCULATION_IS_ACTIVE)
-	    if(P[i].Type != 0) {continue;} // only gas particles can be awakened
+	    if(P[i].Type != 0) {
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+            timestep_limiter_diagnostics_record_wakeup_outcome(i, P[i].TimeBin, P[i].TimeBin,
+                                                                P[i].dt_step, P[i].dt_step, 0, 0,
+                                                                "non_gas_target");
 #endif
-	    if(P[i].Mass <= 0) {continue;}
+            continue;
+        } // only gas particles can be awakened
+#endif
+	    if(P[i].Mass <= 0) {
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+            timestep_limiter_diagnostics_record_wakeup_outcome(i, P[i].TimeBin, P[i].TimeBin,
+                                                                P[i].dt_step, P[i].dt_step, 0, 0,
+                                                                "zero_mass_target");
+#endif
+            continue;
+	    }
 	    binold = P[i].TimeBin;
-	    if(TimeBinActive[binold]) {continue;}
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+	    integertime diagnostic_wakeup_old_dt_step = P[i].dt_step;
+#endif
+	    if(TimeBinActive[binold]) {
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+            timestep_limiter_diagnostics_record_wakeup_outcome(i, binold, binold,
+                                                                diagnostic_wakeup_old_dt_step,
+                                                                diagnostic_wakeup_old_dt_step, 0, 0,
+                                                                "already_active");
+#endif
+            continue;
+        }
 
 	    bin = max_time_bin_active < binold ? max_time_bin_active : binold;
 
@@ -1331,7 +1786,22 @@ void process_wake_ups(void)
 		P[i].Ti_begstep = All.Ti_Current;
 		P[i].dt_step = GET_INTEGERTIME_FROM_TIMEBIN(bin);
 		if(P[i].Ti_current < All.Ti_Current) {P[i].Ti_current=All.Ti_Current;}
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+                timestep_limiter_diagnostics_record_wakeup_outcome(i, binold, bin,
+                                                                    diagnostic_wakeup_old_dt_step,
+                                                                    P[i].dt_step, 1, 0,
+                                                                    "shortened_to_next_active_bin");
+#endif
 	    }
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+            else
+            {
+                timestep_limiter_diagnostics_record_wakeup_outcome(i, binold, bin,
+                                                                    diagnostic_wakeup_old_dt_step,
+                                                                    diagnostic_wakeup_old_dt_step, 0, 0,
+                                                                    "no_shorter_bin_available");
+            }
+#endif
 	}
     }
 

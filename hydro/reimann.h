@@ -690,7 +690,8 @@ void Riemann_solver_exact(struct Input_vec_Riemann Riemann_vec, struct Riemann_o
     {
         /* we're in a Vaccuum! */
         Riemann_out->P_M = Riemann_out->S_M = 0;
-#ifdef HYDRO_MESHLESS_FINITE_VOLUME
+#if defined(HYDRO_MESHLESS_FINITE_VOLUME) || \
+    (defined(HYDRO_MFM_EXACT_FALLBACK_FLUX_FIX) && defined(HYDRO_MESHLESS_FINITE_MASS) && !defined(MAGNETIC) && !defined(EOS_GENERAL))
         Riemann_out->Fluxes.rho = Riemann_out->Fluxes.p = Riemann_out->Fluxes.v[0] = Riemann_out->Fluxes.v[1] = Riemann_out->Fluxes.v[2] = 0;
 #endif
         return;
@@ -720,6 +721,13 @@ void Riemann_solver_exact(struct Input_vec_Riemann Riemann_vec, struct Riemann_o
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
     /* if we got a valid solution, this solver returns face states: need to convert these to fluxes */
     convert_face_to_flux(Riemann_out, n_unit);
+#elif defined(HYDRO_MFM_EXACT_FALLBACK_FLUX_FIX) && defined(HYDRO_MESHLESS_FINITE_MASS) && !defined(MAGNETIC) && !defined(EOS_GENERAL)
+    /* MFM sampling returns only the final contact state, including for vacuum fans.
+     * Rebuild its fluxes here so exact fallback cannot retain the preceding HLLC/KT fluxes.
+     * These are local Riemann-frame fluxes; the caller applies the frame and area factors. */
+    Riemann_out->Fluxes.rho = 0;
+    int k; for(k=0;k<3;k++) {Riemann_out->Fluxes.v[k] = Riemann_out->P_M * n_unit[k];}
+    Riemann_out->Fluxes.p = Riemann_out->P_M * Riemann_out->S_M;
 #endif
 }
 

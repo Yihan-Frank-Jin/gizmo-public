@@ -129,6 +129,9 @@ double rt_ion_G_HI[N_RT_FREQ_BINS];
 double rt_ion_G_HeI[N_RT_FREQ_BINS];
 double rt_ion_G_HeII[N_RT_FREQ_BINS];
 #endif
+#ifdef RT_ABSORBING_OUTFLOW_BOUNDARY
+double RT_EscapedEnergyPending[N_RT_FREQ_BINS];
+#endif
 
 
 
@@ -168,7 +171,7 @@ int N_stars;
 #ifdef BH_WIND_SPAWN
 double  Max_Unspawned_MassUnits_fromSink;
 #endif
-#ifdef BH_YUAN18_SPAWN
+#ifdef BH_YUAN18_WIND_SPAWN
 double  Max_Yuan18_WindReservoirMassUnits_fromSink;
 #endif
 
@@ -242,6 +245,9 @@ FILE
 #endif
 #endif
 *FdCPU;        /*!< file handle for cpu.txt log-file. */
+#ifdef RT_ABSORBING_OUTFLOW_BOUNDARY
+FILE *FdRTEscape;    /*!< compact radiation-escape log, retained in reduced-I/O runs */
+#endif
 
 #ifdef GALSF
 FILE *FdSfr;			/*!< file handle for sfr.txt log-file. */
@@ -268,7 +274,7 @@ FILE *FdBhFormationDetails;
 FILE *FdBlackHolesDetails;
 #ifdef BH_OUTPUT_MOREINFO
 FILE *FdBhMergerDetails;
-#if defined(BH_WIND_KICK) || defined(BH_YUAN18_SPAWN)
+#if defined(BH_WIND_KICK) || defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
 FILE *FdBhWindDetails;
 #endif
 #endif

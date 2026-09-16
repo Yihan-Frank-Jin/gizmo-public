@@ -438,51 +438,6 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
 #endif
             break;
 
-        case IO_YUAN18_JET_MASS:
-#ifdef BH_YUAN18_JET_CONTINUOUS
-            for(n = 0; n < pc; pindex++)
-                if(P[pindex].Type == type)
-                {
-                    *fp++ = (MyOutputFloat) SphP[pindex].Yuan18JetMass;
-                    n++;
-                }
-#endif
-            break;
-
-        case IO_YUAN18_JET_ENERGY:
-#ifdef BH_YUAN18_JET_CONTINUOUS
-            for(n = 0; n < pc; pindex++)
-                if(P[pindex].Type == type)
-                {
-                    *fp++ = (MyOutputFloat) SphP[pindex].Yuan18JetEnergy;
-                    n++;
-                }
-#endif
-            break;
-
-        case IO_YUAN18_JET_MOMENTUM:
-#ifdef BH_YUAN18_JET_CONTINUOUS
-            for(n = 0; n < pc; pindex++)
-                if(P[pindex].Type == type)
-                {
-                    for(k=0;k<3;k++) {fp[k] = (MyOutputFloat) SphP[pindex].Yuan18JetMomentum[k];}
-                    fp += 3;
-                    n++;
-                }
-#endif
-            break;
-
-        case IO_YUAN18_JET_LASTMODE:
-#ifdef BH_YUAN18_JET_CONTINUOUS
-            for(n = 0; n < pc; pindex++)
-                if(P[pindex].Type == type)
-                {
-                    *ip_int++ = SphP[pindex].Yuan18JetLastMode;
-                    n++;
-                }
-#endif
-            break;
-            
         case IO_CRATE:
 #if defined(OUTPUT_COOLRATE_DETAIL) && defined(COOLING)
             for(n = 0; n < pc; pindex++)
@@ -533,6 +488,17 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                 if(P[pindex].Type == type)
                 {
                     *fp++ = (MyOutputFloat) SphP[pindex].MetalCoolingRate;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_COMPTONRATE:
+#if defined(OUTPUT_COOLRATE_DETAIL) && defined(COOLING)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) SphP[pindex].ComptonHeatingCoolingRate;
                     n++;
                 }
 #endif
@@ -1224,6 +1190,83 @@ void fill_write_buffer(enum iofields blocknr, int *startindex, int pc, int type)
                 if(P[pindex].Type == type)
                 {
                     *fp++ = (MyOutputFloat) BPP(pindex).BH_Mdot;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_YUAN18_BH_MASS_FALL:
+#if defined(BH_YUAN18_ACCRETION) && defined(OUTPUT_YUAN18_BH_STATE)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) BPP(pindex).Yuan18_BH_Mass_fall;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_YUAN18_BH_MASS_DISK:
+#if defined(BH_YUAN18_ACCRETION) && defined(OUTPUT_YUAN18_BH_STATE)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) BPP(pindex).Yuan18_BH_Mass_disk;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_YUAN18_BH_MDOT_BONDI:
+#if defined(BH_YUAN18_ACCRETION) && defined(OUTPUT_YUAN18_BH_STATE)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) BPP(pindex).Yuan18_BH_Mdot_Bondi;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_YUAN18_BH_BONDI_RADIUS:
+#if defined(BH_YUAN18_ACCRETION) && defined(OUTPUT_YUAN18_BH_STATE)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) BPP(pindex).Yuan18_BH_Bondi_Radius;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_YUAN18_BH_MODE_WIND:
+#if defined(BH_YUAN18_ACCRETION) && defined(OUTPUT_YUAN18_BH_STATE)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *ip_int++ = BPP(pindex).Yuan18_BH_mode_wind;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_YUAN18_BH_LUMINOSITY:
+#if defined(BH_YUAN18_RADIATION) && defined(OUTPUT_YUAN18_BH_STATE)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) BPP(pindex).Yuan18_BH_L_rad;
+                    n++;
+                }
+#endif
+            break;
+
+        case IO_YUAN18_JET_RESERVOIR_MASS:
+#if defined(BH_YUAN18_JET_SPAWN) && defined(OUTPUT_YUAN18_BH_STATE)
+            for(n = 0; n < pc; pindex++)
+                if(P[pindex].Type == type)
+                {
+                    *fp++ = (MyOutputFloat) BPP(pindex).Yuan18_BH_unspawned_jet_mass;
                     n++;
                 }
 #endif
@@ -1924,7 +1967,6 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_OHMIC:
         case IO_INIB:
         case IO_YUAN18_WIND_MOMENTUM:
-        case IO_YUAN18_JET_MOMENTUM:
         case IO_GRADPHI:
         case IO_GRADRHO:
         case IO_RAD_ACCEL:
@@ -1948,7 +1990,7 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_EOSCOMP:
         case IO_STAGE_PROTOSTAR:
         case IO_YUAN18_WIND_LASTMODE:
-        case IO_YUAN18_JET_LASTMODE:
+        case IO_YUAN18_BH_MODE_WIND:
             bytes_per_blockelement = sizeof(int);
             break;
             
@@ -1968,13 +2010,12 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_UNSPMASS:
         case IO_YUAN18_WIND_MASS:
         case IO_YUAN18_WIND_ENERGY:
-        case IO_YUAN18_JET_MASS:
-        case IO_YUAN18_JET_ENERGY:
         case IO_CRATE:
         case IO_HRATE:
         case IO_NHRATE:
         case IO_HHRATE:
         case IO_MCRATE:
+        case IO_COMPTONRATE:
         case IO_HSML:
         case IO_SFR:
         case IO_AGE:
@@ -2000,6 +2041,12 @@ int get_bytes_per_blockelement(enum iofields blocknr, int mode)
         case IO_SINKRAD:
         case IO_SINK_FORM_MASS:
         case IO_BHMDOT:
+        case IO_YUAN18_BH_MASS_FALL:
+        case IO_YUAN18_BH_MASS_DISK:
+        case IO_YUAN18_BH_MDOT_BONDI:
+        case IO_YUAN18_BH_BONDI_RADIUS:
+        case IO_YUAN18_BH_LUMINOSITY:
+        case IO_YUAN18_JET_RESERVOIR_MASS:
         case IO_R_PROTOSTAR:
         case IO_MASS_D_PROTOSTAR:
         case IO_ZAMS_MASS:
@@ -2238,7 +2285,7 @@ int get_datatype_in_block(enum iofields blocknr)
         case IO_EOSCOMP:
         case IO_STAGE_PROTOSTAR:
         case IO_YUAN18_WIND_LASTMODE:
-        case IO_YUAN18_JET_LASTMODE:
+        case IO_YUAN18_BH_MODE_WIND:
             typekey = 0;		/* native int */
             break;
             
@@ -2270,7 +2317,6 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_VORT:
         case IO_BH_ANGMOM:
         case IO_YUAN18_WIND_MOMENTUM:
-        case IO_YUAN18_JET_MOMENTUM:
         case IO_ANNIHILATION_RADIATION:
             values = 3;
             break;
@@ -2294,14 +2340,12 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_YUAN18_WIND_MASS:
         case IO_YUAN18_WIND_ENERGY:
         case IO_YUAN18_WIND_LASTMODE:
-        case IO_YUAN18_JET_MASS:
-        case IO_YUAN18_JET_ENERGY:
-        case IO_YUAN18_JET_LASTMODE:
         case IO_CRATE:
         case IO_HRATE:
         case IO_NHRATE:
         case IO_HHRATE:
         case IO_MCRATE:
+        case IO_COMPTONRATE:
         case IO_HSML:
         case IO_SFR:
         case IO_AGE:
@@ -2331,6 +2375,13 @@ int get_values_per_blockelement(enum iofields blocknr)
         case IO_SINKRAD:
         case IO_SINK_FORM_MASS:
         case IO_BHMDOT:
+        case IO_YUAN18_BH_MASS_FALL:
+        case IO_YUAN18_BH_MASS_DISK:
+        case IO_YUAN18_BH_MDOT_BONDI:
+        case IO_YUAN18_BH_BONDI_RADIUS:
+        case IO_YUAN18_BH_MODE_WIND:
+        case IO_YUAN18_BH_LUMINOSITY:
+        case IO_YUAN18_JET_RESERVOIR_MASS:
         case IO_R_PROTOSTAR:
         case IO_MASS_D_PROTOSTAR:
         case IO_ZAMS_MASS:
@@ -2581,15 +2632,12 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_YUAN18_WIND_ENERGY:
         case IO_YUAN18_WIND_MOMENTUM:
         case IO_YUAN18_WIND_LASTMODE:
-        case IO_YUAN18_JET_MASS:
-        case IO_YUAN18_JET_ENERGY:
-        case IO_YUAN18_JET_MOMENTUM:
-        case IO_YUAN18_JET_LASTMODE:
         case IO_CRATE:
         case IO_HRATE:
         case IO_NHRATE:
         case IO_HHRATE:
         case IO_MCRATE:
+        case IO_COMPTONRATE:
         case IO_DELAYTIME:
         case IO_SFR:
         case IO_DTENTR:
@@ -2710,6 +2758,13 @@ long get_particles_in_block(enum iofields blocknr, int *typelist)
         case IO_SINKRAD:
         case IO_SINK_FORM_MASS:
         case IO_BHMDOT:
+        case IO_YUAN18_BH_MASS_FALL:
+        case IO_YUAN18_BH_MASS_DISK:
+        case IO_YUAN18_BH_MDOT_BONDI:
+        case IO_YUAN18_BH_BONDI_RADIUS:
+        case IO_YUAN18_BH_MODE_WIND:
+        case IO_YUAN18_BH_LUMINOSITY:
+        case IO_YUAN18_JET_RESERVOIR_MASS:
         case IO_R_PROTOSTAR:
         case IO_MASS_D_PROTOSTAR:
         case IO_ZAMS_MASS:
@@ -2964,20 +3019,12 @@ int blockpresent(enum iofields blocknr)
 #endif
             break;
 
-        case IO_YUAN18_JET_MASS:
-        case IO_YUAN18_JET_ENERGY:
-        case IO_YUAN18_JET_MOMENTUM:
-        case IO_YUAN18_JET_LASTMODE:
-#ifdef BH_YUAN18_JET_CONTINUOUS
-            return 1;
-#endif
-            break;
-
         case IO_CRATE:
         case IO_HRATE:
         case IO_NHRATE:
         case IO_HHRATE:
         case IO_MCRATE:
+        case IO_COMPTONRATE:
 #if defined(OUTPUT_COOLRATE_DETAIL) && defined(COOLING)
             return 1;
 #endif
@@ -3179,6 +3226,28 @@ int blockpresent(enum iofields blocknr)
 
         case IO_BHMDOT:
 #ifdef BLACK_HOLES
+            return 1;
+#endif
+            break;
+
+        case IO_YUAN18_BH_MASS_FALL:
+        case IO_YUAN18_BH_MASS_DISK:
+        case IO_YUAN18_BH_MDOT_BONDI:
+        case IO_YUAN18_BH_BONDI_RADIUS:
+        case IO_YUAN18_BH_MODE_WIND:
+#if defined(BH_YUAN18_ACCRETION) && defined(OUTPUT_YUAN18_BH_STATE)
+            return 1;
+#endif
+            break;
+
+        case IO_YUAN18_BH_LUMINOSITY:
+#if defined(BH_YUAN18_RADIATION) && defined(OUTPUT_YUAN18_BH_STATE)
+            return 1;
+#endif
+            break;
+
+        case IO_YUAN18_JET_RESERVOIR_MASS:
+#if defined(BH_YUAN18_JET_SPAWN) && defined(OUTPUT_YUAN18_BH_STATE)
             return 1;
 #endif
             break;
@@ -3461,18 +3530,6 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
         case IO_YUAN18_WIND_LASTMODE:
             strncpy(label, "Y18L", 4);
             break;
-        case IO_YUAN18_JET_MASS:
-            strncpy(label, "J18M", 4);
-            break;
-        case IO_YUAN18_JET_ENERGY:
-            strncpy(label, "J18E", 4);
-            break;
-        case IO_YUAN18_JET_MOMENTUM:
-            strncpy(label, "J18P", 4);
-            break;
-        case IO_YUAN18_JET_LASTMODE:
-            strncpy(label, "J18L", 4);
-            break;
         case IO_CRATE:
             strncpy(label, "CRATE", 4);
             break;
@@ -3487,6 +3544,9 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
             break;
         case IO_MCRATE:
             strncpy(label, "MCRATE", 4);
+            break;
+        case IO_COMPTONRATE:
+            strncpy(label, "COMPRATE", 4);
             break;
         case IO_HSML:
             strncpy(label, "HSML", 4);
@@ -3661,6 +3721,27 @@ void get_Tab_IO_Label(enum iofields blocknr, char *label)
             break;	    
         case IO_BHMDOT:
             strncpy(label, "BHMD", 4);
+            break;
+        case IO_YUAN18_BH_MASS_FALL:
+            strncpy(label, "Y18F", 4);
+            break;
+        case IO_YUAN18_BH_MASS_DISK:
+            strncpy(label, "Y18D", 4);
+            break;
+        case IO_YUAN18_BH_MDOT_BONDI:
+            strncpy(label, "Y18B", 4);
+            break;
+        case IO_YUAN18_BH_BONDI_RADIUS:
+            strncpy(label, "Y18R", 4);
+            break;
+        case IO_YUAN18_BH_MODE_WIND:
+            strncpy(label, "Y18O", 4);
+            break;
+        case IO_YUAN18_BH_LUMINOSITY:
+            strncpy(label, "Y18L", 4);
+            break;
+        case IO_YUAN18_JET_RESERVOIR_MASS:
+            strncpy(label, "Y18J", 4);
             break;
         case IO_R_PROTOSTAR:
             strncpy(label, "RPST", 4);
@@ -3925,18 +4006,6 @@ void get_dataset_name(enum iofields blocknr, char *buf)
         case IO_YUAN18_WIND_LASTMODE:
             strcpy(buf, "Yuan18WindLastMode");
             break;
-        case IO_YUAN18_JET_MASS:
-            strcpy(buf, "Yuan18JetMass");
-            break;
-        case IO_YUAN18_JET_ENERGY:
-            strcpy(buf, "Yuan18JetEnergy");
-            break;
-        case IO_YUAN18_JET_MOMENTUM:
-            strcpy(buf, "Yuan18JetMomentum");
-            break;
-        case IO_YUAN18_JET_LASTMODE:
-            strcpy(buf, "Yuan18JetLastMode");
-            break;
         case IO_CRATE:
             strcpy(buf, "CoolingRate");
             break;
@@ -3951,6 +4020,9 @@ void get_dataset_name(enum iofields blocknr, char *buf)
             break;
         case IO_MCRATE:
             strcpy(buf, "MetalCoolingRate");
+            break;
+        case IO_COMPTONRATE:
+            strcpy(buf, "ComptonHeatingCoolingRate");
             break;
         case IO_DELAYTIME:
             strcpy(buf, "DelayTime");
@@ -4125,6 +4197,27 @@ void get_dataset_name(enum iofields blocknr, char *buf)
             break;	    
         case IO_BHMDOT:
             strcpy(buf, "BH_Mdot");
+            break;
+        case IO_YUAN18_BH_MASS_FALL:
+            strcpy(buf, "BH_Yuan18_MassFall");
+            break;
+        case IO_YUAN18_BH_MASS_DISK:
+            strcpy(buf, "BH_Yuan18_MassDisk");
+            break;
+        case IO_YUAN18_BH_MDOT_BONDI:
+            strcpy(buf, "BH_Yuan18_MdotBondi");
+            break;
+        case IO_YUAN18_BH_BONDI_RADIUS:
+            strcpy(buf, "BH_Yuan18_BondiRadius");
+            break;
+        case IO_YUAN18_BH_MODE_WIND:
+            strcpy(buf, "BH_Yuan18_ModeWind");
+            break;
+        case IO_YUAN18_BH_LUMINOSITY:
+            strcpy(buf, "BH_Yuan18Luminosity");
+            break;
+        case IO_YUAN18_JET_RESERVOIR_MASS:
+            strcpy(buf, "BH_Yuan18_JetReservoirMass");
             break;
         case IO_R_PROTOSTAR:
             strcpy(buf, "ProtoStellarRadius_inSolar");
@@ -5169,7 +5262,7 @@ void write_header_attributes_in_hdf5(hid_t handle)
     hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "MinFoFMassForNewSeed", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.MinFoFMassForNewSeed); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 #endif
-#if defined(BH_WIND_SPAWN) || defined(BH_YUAN18_SPAWN)
+#if defined(BH_WIND_SPAWN) || defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
     hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Cell_Spawn_Mass_ratio", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BAL_wind_particle_mass); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 #endif
@@ -5181,7 +5274,7 @@ void write_header_attributes_in_hdf5(hid_t handle)
     hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "BAL_internal_temperature", H5T_NATIVE_DOUBLE, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_DOUBLE, &All.BAL_internal_temperature); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);
 #endif
-#if defined(BH_WIND_SPAWN) || defined(BH_YUAN18_SPAWN)
+#if defined(BH_WIND_SPAWN) || defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
     {unsigned long long holder = (unsigned long long) All.AGNWindID; hdf5_dataspace = H5Screate(H5S_SCALAR); hdf5_attribute = H5Acreate(handle, "Spawned_Cell_ID", H5T_NATIVE_ULLONG, hdf5_dataspace, H5P_DEFAULT);
     H5Awrite(hdf5_attribute, H5T_NATIVE_ULLONG, &holder); H5Aclose(hdf5_attribute); H5Sclose(hdf5_dataspace);}
 #endif

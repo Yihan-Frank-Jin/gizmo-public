@@ -1835,6 +1835,33 @@ void fof_make_black_holes(void)
             BPP(import_indices[n]).BH_Mass = All.SeedBlackHoleMass;
         }
         BPP(import_indices[n]).BH_Mdot = 0;
+#ifdef BH_YUAN18_ACCRETION
+        BPP(import_indices[n]).Yuan18_BH_Bondi_Radius = 0;
+        BPP(import_indices[n]).Yuan18_BH_Mass_fall = 0;
+        BPP(import_indices[n]).Yuan18_BH_Mass_disk = 0;
+        BPP(import_indices[n]).Yuan18_BH_Mdot_Bondi = 0;
+        BPP(import_indices[n]).Yuan18_BH_mode_wind = 0;
+#ifdef BH_YUAN18_RADIATION
+        BPP(import_indices[n]).Yuan18_BH_L_rad = 0;
+#endif
+#endif
+#if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
+        BPP(import_indices[n]).Yuan18_BH_r_inject = 0;
+        BPP(import_indices[n]).Yuan18_BH_J_dir[0] = 0;
+        BPP(import_indices[n]).Yuan18_BH_J_dir[1] = 0;
+        BPP(import_indices[n]).Yuan18_BH_J_dir[2] = 0;
+#endif
+#ifdef BH_YUAN18_WIND_SPAWN
+        BPP(import_indices[n]).Yuan18_BH_unspawned_wind_mass = 0;
+        BPP(import_indices[n]).Yuan18_BH_v_wind = 0;
+        BPP(import_indices[n]).Yuan18_BH_eps_wind = 0;
+#endif
+#ifdef BH_YUAN18_JET_SPAWN
+        BPP(import_indices[n]).Yuan18_BH_mdot_jet = 0;
+        BPP(import_indices[n]).Yuan18_BH_v_jet = 0;
+        BPP(import_indices[n]).Yuan18_BH_eps_jet = 0;
+        BPP(import_indices[n]).Yuan18_BH_unspawned_jet_mass = 0;
+#endif
         /* set hydro-ish variables */
         if(BPP(import_indices[n]).Type == 0){
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME

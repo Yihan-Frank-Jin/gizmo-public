@@ -946,6 +946,17 @@ double CoolingRate(double logT,  double rho, double n_elec_guess, double *n_elec
     double LambdaRec, LambdaRecHp, LambdaRecHep, LambdaRecHepp, LambdaRecHepd, T, T_cmb_radeff, shieldfac, LambdaMol, LambdaMetal, LambdaPElec, LambdaDust;
     double nHcgs = HYDROGEN_MASSFRAC * rho / PROTONMASS_CGS;	/* hydrogen number dens in cgs units */
     Lambda=0; Heat=0; LambdaMol=0; LambdaFF=0; LambdaRec=0; LambdaExc=0; LambdaIon=0; LambdaMetal=0; LambdaCompton=0; LambdaPElec=0; LambdaDust=0; /* make sure these are all initialized to zero */
+#if defined(OUTPUT_COOLRATE_DETAIL)
+    if(target >= 0)
+    {
+        SphP[target].CoolingRate = 0;
+        SphP[target].HeatingRate = 0;
+        SphP[target].NetHeatingRateQ = 0;
+        SphP[target].HydroHeatingRate = 0;
+        SphP[target].MetalCoolingRate = 0;
+        SphP[target].ComptonHeatingCoolingRate = 0;
+    }
+#endif
     if(logT <= Tmin) {logT = Tmin + 0.5 * deltaT;}	/* floor at Tmin */
     if(!isfinite(rho)) {return 0;}
     T = pow(10.0, logT);
@@ -1211,7 +1222,12 @@ double CoolingRate(double logT,  double rho, double n_elec_guess, double *n_elec
 #endif
     double Q = Heat - Lambda;
 #if defined(OUTPUT_COOLRATE_DETAIL)
-    if(target>=0) {SphP[target].CoolingRate = Lambda; SphP[target].HeatingRate = Heat;}
+    if(target>=0)
+    {
+        SphP[target].CoolingRate = Lambda;
+        SphP[target].HeatingRate = Heat;
+        SphP[target].ComptonHeatingCoolingRate = LambdaCompton;
+    }
 #endif
 #if defined(SINGLE_STAR_AND_SSP_NUCLEAR_ZOOM_SPECIALBOUNDARIES)
     if(target >= 0) {SphP[target].Lambda_RadiativeCooling_toRHDBins[RT_FREQ_BIN_NUV]=0; SphP[target].Lambda_RadiativeCooling_toRHDBins[RT_FREQ_BIN_INFRARED] = -Q;} // for these runs want to do it all with our dedicated band //

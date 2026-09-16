@@ -490,18 +490,25 @@ void init(void)
                 BPP(i).Yuan18_BH_Mass_fall    = 0;
                 BPP(i).Yuan18_BH_Mass_disk    = 0;
                 BPP(i).Yuan18_BH_Mdot_Bondi   = 0;
+                BPP(i).Yuan18_BH_mode_wind    = 0;
+#ifdef BH_YUAN18_RADIATION
+                BPP(i).Yuan18_BH_L_rad        = 0;
 #endif
-#ifdef BH_YUAN18_SPAWN
-                BPP(i).Yuan18_BH_reservoir_mass = 0;
-                BPP(i).Yuan18_BH_v_wind    = 0;
-                BPP(i).Yuan18_BH_eps_wind  = 0;
+#endif
+#if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
                 BPP(i).Yuan18_BH_r_inject  = 0;
-                BPP(i).Yuan18_BH_mode_wind = 0;
                 BPP(i).Yuan18_BH_J_dir[0] = 0; BPP(i).Yuan18_BH_J_dir[1] = 0; BPP(i).Yuan18_BH_J_dir[2] = 0;
-                BPP(i).Yuan18_BH_reservoir_v_wind    = 0;
-                BPP(i).Yuan18_BH_reservoir_eps_wind  = 0;
-                BPP(i).Yuan18_BH_reservoir_mode_wind = 0;
-                BPP(i).Yuan18_BH_reservoir_J_dir[0] = 0; BPP(i).Yuan18_BH_reservoir_J_dir[1] = 0; BPP(i).Yuan18_BH_reservoir_J_dir[2] = 0;
+#endif
+#ifdef BH_YUAN18_WIND_SPAWN
+                BPP(i).Yuan18_BH_unspawned_wind_mass = 0;
+                BPP(i).Yuan18_BH_v_wind = 0;
+                BPP(i).Yuan18_BH_eps_wind = 0;
+#endif
+#ifdef BH_YUAN18_JET_SPAWN
+                BPP(i).Yuan18_BH_mdot_jet = 0;
+                BPP(i).Yuan18_BH_v_jet = 0;
+                BPP(i).Yuan18_BH_eps_jet = 0;
+                BPP(i).Yuan18_BH_unspawned_jet_mass = 0;
 #endif
             }
 #ifdef BH_INTERACT_ON_GAS_TIMESTEP
@@ -510,6 +517,30 @@ void init(void)
 #endif 
 #if defined(BH_SWALLOWGAS) && !defined(BH_GRAVCAPTURE_GAS)
             if(RestartFlag != 1) {BPP(i).BH_AccretionDeficit = 0;}
+#endif
+#if defined(BH_YUAN18_ACCRETION) && defined(NO_YUAN18_BH_STATE_IN_ICS)
+            if(RestartFlag == 2)
+            {
+                BPP(i).Yuan18_BH_Bondi_Radius = 0;
+                BPP(i).Yuan18_BH_Mass_fall = 0;
+                BPP(i).Yuan18_BH_Mass_disk = 0;
+                BPP(i).Yuan18_BH_Mdot_Bondi = 0;
+                BPP(i).Yuan18_BH_mode_wind = 0;
+#ifdef BH_YUAN18_RADIATION
+                BPP(i).Yuan18_BH_L_rad = yuan18_bh_luminosity(BPP(i).BH_Mdot, BPP(i).BH_Mass);
+#endif
+#ifdef BH_YUAN18_JET_SPAWN
+                BPP(i).Yuan18_BH_unspawned_jet_mass = 0;
+#endif
+            }
+#elif defined(BH_YUAN18_ACCRETION) && defined(NO_YUAN18_BH_MODE_IN_ICS)
+            if(RestartFlag == 2) {BPP(i).Yuan18_BH_mode_wind = 0;}
+#endif
+#if defined(BH_YUAN18_RADIATION) && defined(NO_YUAN18_BH_LUMINOSITY_IN_ICS) && !defined(NO_YUAN18_BH_STATE_IN_ICS)
+            if(RestartFlag == 2) {BPP(i).Yuan18_BH_L_rad = yuan18_bh_luminosity(BPP(i).BH_Mdot, BPP(i).BH_Mass);}
+#endif
+#if defined(BH_YUAN18_JET_SPAWN) && defined(NO_YUAN18_JET_RESERVOIR_IN_ICS)
+            if(RestartFlag == 2) {BPP(i).Yuan18_BH_unspawned_jet_mass = 0;}
 #endif
         }
 #endif
@@ -749,7 +780,7 @@ void init(void)
 #ifdef BH_WIND_SPAWN
     Max_Unspawned_MassUnits_fromSink = 0;
 #endif
-#ifdef BH_YUAN18_SPAWN
+#ifdef BH_YUAN18_WIND_SPAWN
     Max_Yuan18_WindReservoirMassUnits_fromSink = 0;
 #endif
 

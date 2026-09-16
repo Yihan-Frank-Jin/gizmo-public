@@ -474,7 +474,8 @@ void blackhole_bondi_radius_loop(void)
             if(r2 <= 0) {continue;}
 
             double r_dist = sqrt(r2);
-            double v_rad = (dv[0]*dP[0] + dv[1]*dP[1] + dv[2]*dP[2]) / (r_dist * All.cf_atime);
+            double v_rad_code = (dv[0]*dP[0] + dv[1]*dP[1] + dv[2]*dP[2]) / r_dist;
+            double v_rad = yuan18_physical_velocity_from_code(v_rad_code);
             if(v_rad >= 0) {continue;}
 
             double u_j = SphP[j].InternalEnergy;
@@ -633,7 +634,7 @@ void blackhole_mass_flux_loop(void)
     {
         double R_flux_phys = bh_list[b].R_flux_phys;
         if(R_flux_phys <= 0) {continue;}
-        double R_flux_code = R_flux_phys / All.cf_atime;
+        double R_flux_code = yuan18_code_length_from_physical(R_flux_phys);
         if(R_flux_code <= 0) {continue;}
 
         for(j = 0; j < N_gas; j++)
@@ -666,9 +667,9 @@ void blackhole_mass_flux_loop(void)
                 kernel_main(sqrt(r2_sample) * hinv, hinv3, hinv4, &wk, &dwk, -1);
                 if(wk <= 0) {continue;}
 
-                double vr_phys = 0;
-                for(k = 0; k < 3; k++) {vr_phys += dv[k] * dir[k];}
-                vr_phys /= All.cf_atime;
+                double vr_code = 0;
+                for(k = 0; k < 3; k++) {vr_code += dv[k] * dir[k];}
+                double vr_phys = yuan18_physical_velocity_from_code(vr_code);
 
                 local_sample[YUAN18_SAMPLE_INDEX(b, 0, q)] += P[j].Mass * wk;
                 local_sample[YUAN18_SAMPLE_INDEX(b, 1, q)] += P[j].Mass * wk * vr_phys;
@@ -691,11 +692,12 @@ void blackhole_mass_flux_loop(void)
         {
             double rho_code = global_sample[YUAN18_SAMPLE_INDEX(b, 0, q)];
             if(rho_code <= 0) {continue;}
-            double rho_q = rho_code * All.cf_a3inv;
+            double rho_q = yuan18_physical_density_from_code(rho_code);
             double vr_q = global_sample[YUAN18_SAMPLE_INDEX(b, 1, q)] / rho_code;
             BlackholeTempInfo[i].Yuan18_Mdot_Flux += sample_area * rho_q * DMAX(-vr_q, 0.0);
-            BlackholeTempInfo[i].Yuan18_Rho_Sample[q] = rho_code;
-            BlackholeTempInfo[i].Yuan18_Rhovr_Sample[q] = global_sample[YUAN18_SAMPLE_INDEX(b, 1, q)];
+            BlackholeTempInfo[i].Yuan18_Rho_Sample[q] = rho_q;
+            BlackholeTempInfo[i].Yuan18_Rhovr_Sample[q] =
+                yuan18_physical_density_from_code(global_sample[YUAN18_SAMPLE_INDEX(b, 1, q)]);
             BlackholeTempInfo[i].Yuan18_Wt_Sample[q] = global_sample[YUAN18_SAMPLE_INDEX(b, 2, q)];
             BlackholeTempInfo[i].Yuan18_Flux_WeightSum += BlackholeTempInfo[i].Yuan18_Wt_Sample[q];
         }

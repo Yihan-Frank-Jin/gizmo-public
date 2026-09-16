@@ -1,9 +1,9 @@
 
-# This file processes the configurations options in Config.sh, producing
+# This file processes the configurations options in Config.sh, producing 
 # two files:
 #
 #   GIZMO_config.h         to be included in each source file (via allvars.h)
-#   compile_time_info.c    code to be compiled in, which will print the configuration
+#   compile_time_info.c    code to be compiled in, which will print the configuration 
 #
 # This file was originally part of GADGET3 by Volker Springel.
 #

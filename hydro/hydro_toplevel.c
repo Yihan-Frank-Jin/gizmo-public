@@ -176,6 +176,10 @@ struct kernel_hydra
 struct INPUT_STRUCT_NAME
 {
     /* basic hydro variables */
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+    int Type;
+    MyIDType ID, ID_child_number, ID_generation;
+#endif
     MyDouble Pos[3];
     MyFloat Vel[3];
 #ifdef HYDRO_MESHLESS_FINITE_VOLUME
@@ -402,6 +406,12 @@ static inline void particle2in_hydra(struct INPUT_STRUCT_NAME *in, int i, int lo
 static inline void particle2in_hydra(struct INPUT_STRUCT_NAME *in, int i, int loop_iteration)
 {
     int k;
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+    in->Type = P[i].Type;
+    in->ID = P[i].ID;
+    in->ID_child_number = P[i].ID_child_number;
+    in->ID_generation = P[i].ID_generation;
+#endif
     for(k = 0; k < 3; k++)
     {
         in->Pos[k] = P[i].Pos[k];

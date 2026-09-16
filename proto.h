@@ -66,6 +66,19 @@ void do_hermite_correction(void);
 int needs_new_treeforce(int i);
 #endif
 void find_timesteps(void);
+#ifdef OUTPUT_TIMESTEP_LIMITER_DIAGNOSTICS
+void timestep_limiter_diagnostics_open_files(char *mode);
+void timestep_limiter_diagnostics_record_wakeup_request(int target, int requester_type,
+                                                        MyIDType requester_id,
+                                                        MyIDType requester_child_id,
+                                                        MyIDType requester_generation_id,
+                                                        double signal_velocity,
+                                                        double previous_max_signal_velocity,
+                                                        const char *reason);
+void timestep_limiter_diagnostics_record_spawn(int parent, int child,
+                                                MyIDType parent_generation_before_spawn,
+                                                const char *spawn_path);
+#endif
 #ifdef GALSF
 void compute_stellar_feedback(void);
 #endif
@@ -425,8 +438,10 @@ double INLINE_FUNC hubble_function_external(double a);
 #endif
 
 void blackhole_accretion(void);
-#ifdef BH_WIND_SPAWN
+#if defined(BH_WIND_SPAWN) || defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN)
 void get_random_orthonormal_basis(int seed, double *nx, double *ny, double *nz);
+#endif
+#ifdef BH_WIND_SPAWN
 void get_wind_spawn_direction(int i, int num_spawned_this_call, int mode, double *ny, double *nz, double *veldir, double *dpdir);
 double get_spawned_cell_launch_speed(int i);
 #ifdef MAGNETIC
@@ -435,7 +450,10 @@ void get_wind_spawn_magnetic_field(int j, int mode, double *ny, double *nz,  dou
 int blackhole_spawn_particle_wind_shell( int i, int dummy_cell_i_to_clone, int num_already_spawned );
 void spawn_bh_wind_feedback(void);
 #endif
-#ifdef BH_YUAN18_SPAWN
+#ifdef BH_YUAN18_JET_SPAWN
+int spawn_bh_yuan18_feedback(double *mass_spawned_out);
+#endif
+#ifdef BH_YUAN18_WIND_SPAWN
 int spawn_bh_yuan18_wind_feedback(double *mass_spawned_out);
 #endif
 int blackhole_evaluate(int target, int mode, int *nexport, int *nsend_local);
@@ -684,10 +702,10 @@ char *GetMultiSpeciesFilename(int i, int hk);
 
 double bh_angleweight(double bh_lum_input, MyFloat bh_angle[3], double dx, double dy, double dz);
 double bh_angleweight_localcoupling(int j, double cos_theta, double r, double H_bh);
-#if defined(BH_YUAN18_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+#if defined(BH_YUAN18_JET_SPAWN) || defined(BH_YUAN18_WIND_SPAWN) || defined(BH_YUAN18_WIND_CONTINUOUS)
 double yuan18_wind_injection_radius_code(double r_inject_physical);
 #endif
-#if defined(BH_YUAN18_WIND_CONTINUOUS) || defined(BH_YUAN18_JET_CONTINUOUS)
+#ifdef BH_YUAN18_WIND_CONTINUOUS
 void yuan18_wind_surface_direction(int q, double *dir);
 double yuan18_wind_angular_weight(double cos_theta, int mode_wind);
 double yuan18_wind_surface_assignment_weight(int j, double r_to_sample);
@@ -887,6 +905,11 @@ double rt_absorption_rate(int i, int k_freq);
 double rt_diffusion_coefficient(int i, int k_freq);
 void rt_eddington_update_calculation(int j);
 void rt_update_driftkick(int i, double dt_entr, int mode);
+#ifdef RT_ABSORBING_OUTFLOW_BOUNDARY
+int rt_absorbing_outflow_boundary_cell_is_active(int i);
+void rt_absorbing_outflow_boundary_flush_escaped_energy(void);
+void rt_absorbing_outflow_boundary_write_statistics(void);
+#endif
 #endif
 #ifdef RT_SOURCE_INJECTION
 void rt_source_injection(void);
